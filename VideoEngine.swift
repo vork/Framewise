@@ -89,6 +89,38 @@ final class VideoEngine: ObservableObject {
 
     // MARK: - Load Video
 
+    func unloadVideo(side: VideoSide) {
+        switch side {
+        case .a:
+            playerA?.pause()
+            playerA = nil
+            videoOutputA = nil
+            hasVideoA = false
+            videoNameA = nil
+        case .b:
+            playerB?.pause()
+            playerB = nil
+            videoOutputB = nil
+            hasVideoB = false
+            videoNameB = nil
+        }
+        // Recalculate duration from remaining video
+        if hasVideoA || hasVideoB {
+            let d = playerA?.currentItem?.duration ?? playerB?.currentItem?.duration ?? .zero
+            duration = (d.isValid && !d.isIndefinite) ? d.seconds : 0
+        } else {
+            duration = 0
+            currentTime = 0
+            currentFrame = 0
+            seekPosition = 0
+        }
+        // Fall back to split if only one video remains
+        if !(hasVideoA && hasVideoB) {
+            displayMode = .split
+        }
+        setupTimeObserver()
+    }
+
     func loadVideo(url: URL, side: VideoSide) {
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let playerItem = AVPlayerItem(asset: asset)

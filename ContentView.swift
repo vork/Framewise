@@ -56,20 +56,23 @@ struct ContentView: View {
                 VStack {
                     HStack(alignment: .top) {
                         if let name = engine.videoNameA {
-                            videoLabel(name, color: .blue)
-                                .padding(.leading, 12)
-                                .padding(.top, 10)
+                            videoLabel(name, color: .blue) {
+                                engine.unloadVideo(side: .a)
+                            }
+                            .padding(.leading, 12)
+                            .padding(.top, 10)
                         }
                         Spacer()
                         if let name = engine.videoNameB {
-                            videoLabel(name, color: .orange)
-                                .padding(.trailing, 12)
-                                .padding(.top, 10)
+                            videoLabel(name, color: .orange) {
+                                engine.unloadVideo(side: .b)
+                            }
+                            .padding(.trailing, 12)
+                            .padding(.top, 10)
                         }
                     }
                     Spacer()
                 }
-                .allowsHitTesting(false)
 
                 // Empty state
                 if !engine.hasVideoA && !engine.hasVideoB {
@@ -139,14 +142,23 @@ struct ContentView: View {
 
     // MARK: - Video Label
 
-    func videoLabel(_ name: String, color: Color) -> some View {
+    func videoLabel(_ name: String, color: Color, onClose: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(name).lineLimit(1).truncationMode(.middle)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 16, height: 16)
+                    .background(.white.opacity(0.15), in: Circle())
+            }
+            .buttonStyle(.plain)
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(.white)
-        .padding(.horizontal, 10)
+        .padding(.leading, 10)
+        .padding(.trailing, 6)
         .padding(.vertical, 5)
         .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
     }
