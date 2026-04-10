@@ -1,0 +1,250 @@
+name: Build & Package App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  APP_NAME: "VideoComparison"
+  DISPLAY_NAME: "Video Comparison"
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════
+  # macOS (Universal — Apple Silicon + Intel)
+  # ════════════════════════════════════════════════════════════════════
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Build arm64 ──────────────────────────────────────────────
+      - name: Build (arm64)
+        run: |
+          mkdir -p .build
+          swiftc \
+            -O \
+            -whole-module-optimization \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            -target arm64-apple-macosx14.0 \
+            -framework Metal \
+            -framework MetalKit \
+            -framework AVFoundation \
+            -framework CoreImage \
+            -framework CoreVideo \
+            -framework AppKit \
+            -framework SwiftUI \
+            -framework UniformTypeIdentifiers \
+            -framework QuartzCore \
+            -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+            VideoComparisonApp.swift \
+            ShaderSource.swift \
+            VideoEngine.swift \
+            MetalComparisonView.swift \
+            ContentView.swift \
+            -o .build/VideoComparison-arm64
+
+      # ── Build x86_64 ────────────────────────────────────────────
+      - name: Build (x86_64)
+        run: |
+          swiftc \
+            -O \
+            -whole-module-optimization \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            -target x86_64-apple-macosx14.0 \
+            -framework Metal \
+            -framework MetalKit \
+            -framework AVFoundation \
+            -framework CoreImage \
+            -framework CoreVideo \
+            -framework AppKit \
+            -framework SwiftUI \
+            -framework UniformTypeIdentifiers \
+            -framework QuartzCore \
+            -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+            VideoComparisonApp.swift \
+            ShaderSource.swift \
+            VideoEngine.swift \
+            MetalComparisonView.swift \
+            ContentView.swift \
+            -o .build/VideoComparison-x86_64
+
+      # ── Create universal binary ─────────────────────────────────
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            .build/VideoComparison-arm64 \
+            .build/VideoComparison-x86_64 \
+            -output .build/VideoComparison
+          lipo -info .build/VideoComparison
+
+      # ── Create .icns icon ───────────────────────────────────────
+      - name: Create app icon
+        run: |
+          ICON_SRC="App Exports/App-iOS-Dark-1024x1024@1x.png"
+          if [ -f "$ICON_SRC" ]; then
+            ICONSET=".build/AppIcon.iconset"
+            mkdir -p "$ICONSET"
+            for SIZE in 16 32 64 128 256 512 1024; do
+              sips -z $SIZE $SIZE "$ICON_SRC" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null 2>&1
+            done
+            cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
+            cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
+            cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
+            cp "$ICONSET/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
+            cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+            rm -f "$ICONSET/icon_64x64.png" "$ICONSET/icon_1024x1024.png"
+            iconutil -c icns "$ICONSET" -o .build/AppIcon.icns
+          fi
+
+      # ── Assemble app bundle ─────────────────────────────────────
+      - name: Create app bundle
+        run: |
+          BUNDLE="${DISPLAY_NAME}.app"
+          mkdir -p "$BUNDLE/Contents/MacOS"
+          mkdir -p "$BUNDLE/Contents/Resources"
+          cp .build/VideoComparison "$BUNDLE/Contents/MacOS/"
+          cp Info.plist "$BUNDLE/Contents/"
+          [ -f .build/AppIcon.icns ] && cp .build/AppIcon.icns "$BUNDLE/Contents/Resources/"
+          echo "App bundle created: $BUNDLE"
+
+      # ── Code-signing certificate ─────────────────────────────────
+      - name: Import code-signing certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_FILE="$(mktemp /tmp/cert_XXXXXX).p12"
+          KEYCHAIN_FILE="/tmp/build-$(uuidgen).keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 20)
+
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERT_FILE"
+
+          security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_FILE"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security import "$CERT_FILE" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_FILE"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
+          security list-keychains -d user -s "$KEYCHAIN_FILE" $(security list-keychains -d user | tr -d '"')
+
+          echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+          rm -f "$CERT_FILE"
+
+      # ── Codesign app bundle ──────────────────────────────────────
+      - name: Codesign app bundle
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
+        run: |
+          BUNDLE="${DISPLAY_NAME}.app"
+          ENTITLEMENTS="VideoComparison.entitlements"
+
+          codesign --force --options runtime \
+            --sign "$CERT_NAME" \
+            --entitlements "$ENTITLEMENTS" \
+            "$BUNDLE"
+
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+
+      - name: Ad-hoc sign (no certificate)
+        if: env.MACOS_CERTIFICATE_P12 == ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+        run: |
+          BUNDLE="${DISPLAY_NAME}.app"
+          codesign --force --sign - "$BUNDLE"
+
+      # ── Notarize ─────────────────────────────────────────────────
+      - name: Notarize app
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_ID != ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          BUNDLE="${DISPLAY_NAME}.app"
+
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" notarize-upload.zip
+
+          xcrun notarytool submit notarize-upload.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$BUNDLE"
+          rm -f notarize-upload.zip
+
+      # ── Package ──────────────────────────────────────────────────
+      - name: Package macOS app
+        run: |
+          BUNDLE="${DISPLAY_NAME}.app"
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" \
+            VideoComparison-macos-universal.zip
+
+      # ── Cleanup ──────────────────────────────────────────────────
+      - name: Clean up keychain
+        if: always() && env.KEYCHAIN_FILE != ''
+        run: security delete-keychain "$KEYCHAIN_FILE" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-macos-universal
+          path: VideoComparison-macos-universal.zip
+
+  # ════════════════════════════════════════════════════════════════════
+  # Create GitHub Release (only on tag push)
+  # ════════════════════════════════════════════════════════════════════
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          cp artifacts/app-macos-universal/VideoComparison-macos-universal.zip release-assets/
+
+          cd release-assets
+          sha256sum *.zip | tee checksums.sha256
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            |----------|------|
+            | macOS (Universal — Apple Silicon + Intel) | `VideoComparison-macos-universal.zip` |
+
+            ### Installation
+            1. Download the `.zip` file
+            2. Extract and move **Video Comparison.app** to `/Applications`
+            3. Double-click to launch
+
+            ### Verification
+            ```
+            sha256sum -c checksums.sha256
+            ```
+          files: |
+            release-assets/VideoComparison-macos-universal.zip
+            release-assets/checksums.sha256
