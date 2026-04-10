@@ -7,8 +7,7 @@ on:
       - 'v*'
 
 env:
-  APP_NAME: "VideoComparison"
-  DISPLAY_NAME: "Video Comparison"
+  APP_NAME: "Framewise"
 
 jobs:
   # ════════════════════════════════════════════════════════════════════
@@ -38,12 +37,12 @@ jobs:
             -framework UniformTypeIdentifiers \
             -framework QuartzCore \
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-            VideoComparisonApp.swift \
+            FramewiseApp.swift \
             ShaderSource.swift \
             VideoEngine.swift \
             MetalComparisonView.swift \
             ContentView.swift \
-            -o .build/VideoComparison-arm64
+            -o .build/Framewise-arm64
 
       # ── Build x86_64 ────────────────────────────────────────────
       - name: Build (x86_64)
@@ -63,21 +62,21 @@ jobs:
             -framework UniformTypeIdentifiers \
             -framework QuartzCore \
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-            VideoComparisonApp.swift \
+            FramewiseApp.swift \
             ShaderSource.swift \
             VideoEngine.swift \
             MetalComparisonView.swift \
             ContentView.swift \
-            -o .build/VideoComparison-x86_64
+            -o .build/Framewise-x86_64
 
       # ── Create universal binary ─────────────────────────────────
       - name: Create universal binary
         run: |
           lipo -create \
-            .build/VideoComparison-arm64 \
-            .build/VideoComparison-x86_64 \
-            -output .build/VideoComparison
-          lipo -info .build/VideoComparison
+            .build/Framewise-arm64 \
+            .build/Framewise-x86_64 \
+            -output .build/Framewise
+          lipo -info .build/Framewise
 
       # ── Create .icns icon ───────────────────────────────────────
       - name: Create app icon
@@ -101,10 +100,10 @@ jobs:
       # ── Assemble app bundle ─────────────────────────────────────
       - name: Create app bundle
         run: |
-          BUNDLE="${DISPLAY_NAME}.app"
+          BUNDLE="${APP_NAME}.app"
           mkdir -p "$BUNDLE/Contents/MacOS"
           mkdir -p "$BUNDLE/Contents/Resources"
-          cp .build/VideoComparison "$BUNDLE/Contents/MacOS/"
+          cp .build/Framewise "$BUNDLE/Contents/MacOS/"
           cp Info.plist "$BUNDLE/Contents/"
           [ -f .build/AppIcon.icns ] && cp .build/AppIcon.icns "$BUNDLE/Contents/Resources/"
           echo "App bundle created: $BUNDLE"
@@ -143,8 +142,8 @@ jobs:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
         run: |
-          BUNDLE="${DISPLAY_NAME}.app"
-          ENTITLEMENTS="VideoComparison.entitlements"
+          BUNDLE="${APP_NAME}.app"
+          ENTITLEMENTS="Framewise.entitlements"
 
           codesign --force --options runtime \
             --sign "$CERT_NAME" \
@@ -158,7 +157,7 @@ jobs:
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
         run: |
-          BUNDLE="${DISPLAY_NAME}.app"
+          BUNDLE="${APP_NAME}.app"
           codesign --force --sign - "$BUNDLE"
 
       # ── Notarize ─────────────────────────────────────────────────
@@ -170,7 +169,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          BUNDLE="${DISPLAY_NAME}.app"
+          BUNDLE="${APP_NAME}.app"
 
           ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" notarize-upload.zip
 
@@ -186,9 +185,9 @@ jobs:
       # ── Package ──────────────────────────────────────────────────
       - name: Package macOS app
         run: |
-          BUNDLE="${DISPLAY_NAME}.app"
+          BUNDLE="${APP_NAME}.app"
           ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" \
-            VideoComparison-macos-universal.zip
+            Framewise-macos-universal.zip
 
       # ── Cleanup ──────────────────────────────────────────────────
       - name: Clean up keychain
@@ -198,7 +197,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: app-macos-universal
-          path: VideoComparison-macos-universal.zip
+          path: Framewise-macos-universal.zip
 
   # ════════════════════════════════════════════════════════════════════
   # Create GitHub Release (only on tag push)
@@ -219,7 +218,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
-          cp artifacts/app-macos-universal/VideoComparison-macos-universal.zip release-assets/
+          cp artifacts/app-macos-universal/Framewise-macos-universal.zip release-assets/
 
           cd release-assets
           sha256sum *.zip | tee checksums.sha256
@@ -234,11 +233,11 @@ jobs:
 
             | Platform | File |
             |----------|------|
-            | macOS (Universal — Apple Silicon + Intel) | `VideoComparison-macos-universal.zip` |
+            | macOS (Universal — Apple Silicon + Intel) | `Framewise-macos-universal.zip` |
 
             ### Installation
             1. Download the `.zip` file
-            2. Extract and move **Video Comparison.app** to `/Applications`
+            2. Extract and move **Framewise.app** to `/Applications`
             3. Double-click to launch
 
             ### Verification
@@ -246,5 +245,5 @@ jobs:
             sha256sum -c checksums.sha256
             ```
           files: |
-            release-assets/VideoComparison-macos-universal.zip
+            release-assets/Framewise-macos-universal.zip
             release-assets/checksums.sha256

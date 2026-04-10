@@ -1,4 +1,4 @@
-# Video Comparison
+# Framewise
 
 A native macOS app for side-by-side video comparison with a split-view slider and error visualization. Built with Swift, Metal, and AVFoundation.
 
@@ -70,7 +70,7 @@ Requires **Xcode Command Line Tools** on macOS 14+.
 
 ```bash
 ./build.sh
-open "Video Comparison.app"
+open "Framewise.app"
 ```
 
 The build script compiles Swift sources, generates the app icon from the icon in `App Exports/`, and creates a signed `.app` bundle.
@@ -113,7 +113,7 @@ git push origin v1.0.0
 
 | File | Purpose |
 |------|---------|
-| `VideoComparisonApp.swift` | App entry point |
+| `FramewiseApp.swift` | App entry point |
 | `ContentView.swift` | SwiftUI UI layout and controls |
 | `VideoEngine.swift` | Dual AVPlayer management, synchronization, and state |
 | `MetalComparisonView.swift` | Metal rendering pipeline with CIImage color management |

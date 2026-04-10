@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_NAME="Video Comparison"
-BUNDLE_ID="com.local.VideoComparison"
+APP_NAME="Framewise"
+BUNDLE_ID="com.local.Framewise"
 BUNDLE="${APP_NAME}.app"
 BUILD_DIR=".build"
-ENTITLEMENTS="VideoComparison.entitlements"
+ENTITLEMENTS="Framewise.entitlements"
 
 # Code-signing identity: use env var, or fall back to ad-hoc
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -36,12 +36,12 @@ swiftc \
     -framework UniformTypeIdentifiers \
     -framework QuartzCore \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-    VideoComparisonApp.swift \
+    FramewiseApp.swift \
     ShaderSource.swift \
     VideoEngine.swift \
     MetalComparisonView.swift \
     ContentView.swift \
-    -o "$BUILD_DIR/VideoComparison"
+    -o "$BUILD_DIR/Framewise"
 
 echo "Compilation successful."
 
@@ -68,7 +68,7 @@ if [ -f "$ICON_SRC" ]; then
     iconutil -c icns "$ICONSET" -o "$BUILD_DIR/AppIcon.icns"
     echo "Icon created."
 else
-    echo "Warning: icon.png not found, skipping icon."
+    echo "Warning: icon not found, skipping icon."
 fi
 
 # ── Assemble app bundle ───────────────────────────────────────────
@@ -76,7 +76,7 @@ echo "Creating app bundle..."
 mkdir -p "$BUNDLE/Contents/MacOS"
 mkdir -p "$BUNDLE/Contents/Resources"
 
-cp "$BUILD_DIR/VideoComparison" "$BUNDLE/Contents/MacOS/"
+cp "$BUILD_DIR/Framewise" "$BUNDLE/Contents/MacOS/"
 cp Info.plist "$BUNDLE/Contents/"
 
 if [ -f "$BUILD_DIR/AppIcon.icns" ]; then
