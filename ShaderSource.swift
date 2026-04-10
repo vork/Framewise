@@ -24,6 +24,8 @@ struct Uniforms {
     int tonemapMode;    // 0=gamma, 1=falseColor, 2=posNeg
     float exposure;
     float gamma;
+    int dropHighlight;  // -1=none, 0=left, 1=right
+    float _pad0;
 };
 
 // ── False color map ──────────────────────────────────────────────────
@@ -153,6 +155,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         color = float4(0.08, 0.08, 0.08, 1.0);
     }
 
+    // CIImage outputs sRGB-encoded displayP3. For exposure/gamma adjustments,
+    // decode to linear, apply exposure, re-encode with user gamma.
+    if (abs(u.exposure) > 0.001 || abs(u.gamma - 2.2) > 0.05) {
+        // Decode sRGB to linear
+        float3 linear = pow(max(color.rgb, 0.0), float3(2.2));
+        // Apply exposure in linear space
+        linear = pow(2.0, u.exposure) * linear;
+        // Re-encode with user gamma (default 2.2 = back to sRGB)
+        color.rgb = pow(max(linear, 0.0), float3(1.0 / u.gamma));
+    }
+
     // ── Comparison slider ────────────────────────────────────────
     if (u.showSlider != 0 && (u.hasVideoA != 0 || u.hasVideoB != 0)) {
         float sliderPx = u.sliderPosition * u.viewportSize.x;
@@ -178,6 +191,24 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         }
         if (rel.x > 4.0 && rel.x < 12.0 && abs(rel.y) < (12.0 - rel.x) * 0.7) {
             color = float4(0.2, 0.2, 0.2, 1.0);
+        }
+    }
+
+    // ── Drop zone highlight ──────────────────────────────────────
+    if (u.dropHighlight >= 0) {
+        float normX = in.position.x / u.viewportSize.x;
+        bool onLeft = (normX < 0.5);
+        bool highlight = (u.dropHighlight == 0 && onLeft) || (u.dropHighlight == 1 && !onLeft);
+        if (highlight) {
+            float3 tint = (u.dropHighlight == 0)
+                ? float3(0.2, 0.4, 1.0)   // blue for A
+                : float3(1.0, 0.6, 0.1);  // orange for B
+            color = float4(mix(color.rgb, tint, 0.25), 1.0);
+        }
+        // Divider line down the center
+        float cx = u.viewportSize.x * 0.5;
+        if (abs(in.position.x - cx) < 1.5) {
+            color = float4(1.0);
         }
     }
 

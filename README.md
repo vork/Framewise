@@ -10,13 +10,17 @@ A native macOS app for side-by-side video comparison with a split-view slider an
 
 - **Side-by-side comparison** with draggable slider
 - **Error visualization mode** — view the difference between two videos with multiple error metrics and tonemapping options (inspired by [tev](https://github.com/Tom94/tev))
+- **Drag-and-drop** — drop video files onto the left or right half of the window to load them as Video A or B
 - **HDR support** — displays HDR content on capable screens via EDR, falls back to SDR automatically
 - **4K and beyond** — handles any resolution your hardware supports
 - **Deep zoom** — zoom up to 200x to inspect individual pixels
+- **Exposure & gamma control** — adjust in both split and error modes, available even with a single video
 - **Frame-accurate sync** — both videos stay perfectly synchronized
 - **Frame stepping** — navigate frame by frame with arrow keys
-- **Go to frame** — jump to any frame number
+- **Go to frame** — jump to any frame number directly
+- **Persistent settings** — display mode, error metric, and visualization mode are remembered across sessions
 - **All modern formats** — H.264, HEVC, ProRes, AV1, VP9, and anything AVFoundation supports
+- **In-app help** — press `?` to see all keyboard shortcuts
 
 ## Display Modes
 
@@ -31,22 +35,22 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Metric | Formula | Use case |
 |--------|---------|----------|
 | Error | `A - B` | Signed difference — see direction of change |
-| Absolute Error | `|A - B|` | Magnitude of difference |
+| Absolute Error | `abs(A - B)` | Magnitude of difference |
 | Squared Error | `(A - B)²` | Emphasizes larger differences |
-| Relative Absolute | `|A - B| / (|B| + ε)` | Normalized by reference brightness |
+| Relative Absolute | `abs(A - B) / (abs(B) + ε)` | Normalized by reference brightness |
 | Relative Squared | `(A - B)² / (B² + ε)` | Normalized squared difference |
 
 **Visualization Modes** (cycle with `F`):
 
 | Mode | Description |
 |------|-------------|
-| Gamma | Sign-preserving gamma curve. Adjustable gamma (γ) parameter. |
+| Gamma | Sign-preserving gamma curve with adjustable γ parameter |
 | False Color | Logarithmic heatmap (black → blue → cyan → green → yellow → red → white) |
 | Pos/Neg | Green = positive difference, Red = negative difference |
 
 **Exposure & Gamma:**
-- **Exposure (EV):** -10 to +10 stops. Scales the error by `2^EV` before visualization.
-- **Gamma (γ):** 0.1 to 5.0. Controls the gamma curve in Gamma visualization mode.
+- **Exposure (EV):** -10 to +10 stops. Scales the image by `2^EV`. Works in both split and error modes.
+- **Gamma (γ):** 0.1 to 5.0. Controls the display gamma curve.
 
 ## Controls
 
@@ -63,6 +67,12 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Toggle Split / Error mode | `E` |
 | Cycle error metric | `M` |
 | Cycle visualization mode | `F` |
+| Increase / decrease exposure | `]` / `[` |
+| Increase / decrease gamma | `}` / `{` (Shift + `]` / `[`) |
+| Reset exposure & gamma | `0` |
+| Show keyboard shortcuts | `?` |
+
+**Drag-and-drop:** Drop a video file onto the left half of the window to load it as Video A, or onto the right half for Video B. A blue or orange highlight indicates which side will receive the file.
 
 ## Building
 
@@ -73,7 +83,7 @@ Requires **Xcode Command Line Tools** on macOS 14+.
 open "Framewise.app"
 ```
 
-The build script compiles Swift sources, generates the app icon from the icon in `App Exports/`, and creates a signed `.app` bundle.
+The build script compiles Swift sources, generates the app icon from `App Exports/`, and creates a signed `.app` bundle.
 
 ### Code-signed build
 
@@ -114,10 +124,10 @@ git push origin v1.0.0
 | File | Purpose |
 |------|---------|
 | `FramewiseApp.swift` | App entry point |
-| `ContentView.swift` | SwiftUI UI layout and controls |
-| `VideoEngine.swift` | Dual AVPlayer management, synchronization, and state |
-| `MetalComparisonView.swift` | Metal rendering pipeline with CIImage color management |
-| `ShaderSource.swift` | Metal shaders — split view, error metrics, tonemapping |
+| `ContentView.swift` | SwiftUI UI layout, controls, and help overlay |
+| `VideoEngine.swift` | Dual AVPlayer management, synchronization, and persisted state |
+| `MetalComparisonView.swift` | Metal rendering pipeline, CIImage color management, drag-and-drop |
+| `ShaderSource.swift` | Metal shaders — split view, error metrics, tonemapping, drop highlight |
 
 The rendering pipeline uses **CIImage** for color-managed pixel buffer conversion (handling HDR/SDR automatically) and a **Metal** shader for both the split-view composition and error visualization with zoom/pan support.
 

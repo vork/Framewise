@@ -47,10 +47,16 @@ final class VideoEngine: ObservableObject {
     @Published var videoNameA: String?
     @Published var videoNameB: String?
 
-    // Error visualization
-    @Published var displayMode: DisplayMode = .split
-    @Published var errorMetric: ErrorMetric = .error
-    @Published var tonemapMode: TonemapMode = .gamma
+    // Error visualization (persisted)
+    @Published var displayMode: DisplayMode = .split {
+        didSet { UserDefaults.standard.set(displayMode.rawValue, forKey: "displayMode") }
+    }
+    @Published var errorMetric: ErrorMetric = .error {
+        didSet { UserDefaults.standard.set(errorMetric.rawValue, forKey: "errorMetric") }
+    }
+    @Published var tonemapMode: TonemapMode = .gamma {
+        didSet { UserDefaults.standard.set(tonemapMode.rawValue, forKey: "tonemapMode") }
+    }
     @Published var exposure: Double = 0.0
     @Published var gamma: Double = 2.2
 
@@ -63,6 +69,14 @@ final class VideoEngine: ObservableObject {
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     var isScrubbing = false
+
+    // MARK: - Init (restore persisted settings)
+    init() {
+        let ud = UserDefaults.standard
+        if let v = DisplayMode(rawValue: ud.integer(forKey: "displayMode")) { displayMode = v }
+        if let v = ErrorMetric(rawValue: ud.integer(forKey: "errorMetric")) { errorMetric = v }
+        if let v = TonemapMode(rawValue: ud.integer(forKey: "tonemapMode")) { tonemapMode = v }
+    }
 
     var currentTimeString: String { formatTime(currentTime) }
     var durationString: String { formatTime(duration) }
@@ -185,9 +199,20 @@ final class VideoEngine: ObservableObject {
     }
 
     func seekToEnd() {
-        let d = playerA?.currentItem?.duration ?? playerB?.currentItem?.duration ?? .zero
-        if d.isValid && !d.isIndefinite {
-            seek(to: d)
+        // Seek each player to its own last displayable frame
+        func seekPlayerToEnd(_ player: AVPlayer?, fps: Double) {
+            guard let player, let item = player.currentItem else { return }
+            let d = item.duration
+            guard d.isValid && !d.isIndefinite else { return }
+            let frameDuration = CMTime(seconds: 1.0 / fps, preferredTimescale: 9000)
+            let target = CMTimeSubtract(d, frameDuration)
+            player.seek(to: target, toleranceBefore: frameDuration, toleranceAfter: .zero)
+        }
+        seekPlayerToEnd(playerA, fps: frameRateA)
+        seekPlayerToEnd(playerB, fps: frameRateB)
+        // Defer time update to allow async seeks to land
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.updateTimeFromPlayer()
         }
     }
 
@@ -217,6 +242,8 @@ final class VideoEngine: ObservableObject {
     func resetView() {
         zoom = 1.0
         panOffset = .zero
+        exposure = 0.0
+        gamma = 2.2
     }
 
     func zoomAtPoint(factor: Double, viewPoint: CGPoint, viewSize: CGSize) {

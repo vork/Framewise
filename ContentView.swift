@@ -45,10 +45,10 @@ extension TonemapMode {
 struct ContentView: View {
     @StateObject private var engine = VideoEngine()
     @State private var frameInput: String = ""
+    @State private var showHelp = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Video viewport with overlays
             ZStack {
                 MetalComparisonView(engine: engine)
 
@@ -75,6 +75,11 @@ struct ContentView: View {
                 if !engine.hasVideoA && !engine.hasVideoB {
                     emptyStateView
                 }
+
+                // Help overlay
+                if showHelp {
+                    helpOverlay
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -83,18 +88,21 @@ struct ContentView: View {
         .background(Color.black)
         .preferredColorScheme(.dark)
         .focusable()
+        // ── Playback ─────────────────────────────────────────
         .onKeyPress(.space) { engine.togglePlayPause(); return .handled }
         .onKeyPress(.leftArrow) { engine.stepBackward(); return .handled }
         .onKeyPress(.rightArrow) { engine.stepForward(); return .handled }
-        .onKeyPress(.upArrow) { engine.zoom = min(200, engine.zoom * 1.25); return .handled }
-        .onKeyPress(.downArrow) { engine.zoom = max(0.1, engine.zoom / 1.25); return .handled }
         .onKeyPress(.home) { engine.seekToStart(); return .handled }
         .onKeyPress(.end) { engine.seekToEnd(); return .handled }
+        // ── Zoom ─────────────────────────────────────────────
+        .onKeyPress(.upArrow) { engine.zoom = min(200, engine.zoom * 1.25); return .handled }
+        .onKeyPress(.downArrow) { engine.zoom = max(0.1, engine.zoom / 1.25); return .handled }
         .onKeyPress("r") { engine.resetView(); return .handled }
         .onKeyPress("1") { engine.zoom = 1.0; return .handled }
         .onKeyPress("2") { engine.zoom = 2.0; return .handled }
         .onKeyPress("4") { engine.zoom = 4.0; return .handled }
         .onKeyPress("8") { engine.zoom = 8.0; return .handled }
+        // ── Display mode ─────────────────────────────────────
         .onKeyPress("e") {
             if engine.hasVideoA && engine.hasVideoB {
                 engine.displayMode = engine.displayMode == .split ? .error : .split
@@ -114,6 +122,18 @@ struct ContentView: View {
                 engine.tonemapMode = TonemapMode(rawValue: next)!
             }
             return .handled
+        }
+        // ── Exposure & Gamma ─────────────────────────────────
+        .onKeyPress("]") { engine.exposure = min(10, engine.exposure + 0.1); return .handled }
+        .onKeyPress("[") { engine.exposure = max(-10, engine.exposure - 0.1); return .handled }
+        .onKeyPress("}") { engine.gamma = min(5, engine.gamma + 0.1); return .handled }
+        .onKeyPress("{") { engine.gamma = max(0.1, engine.gamma - 0.1); return .handled }
+        .onKeyPress("0") { engine.exposure = 0; engine.gamma = 2.2; return .handled }
+        // ── Help ─────────────────────────────────────────────
+        .onKeyPress("?") { showHelp.toggle(); return .handled }
+        .onKeyPress(.escape) {
+            if showHelp { showHelp = false; return .handled }
+            return .ignored
         }
     }
 
@@ -138,14 +158,115 @@ struct ContentView: View {
             Image(systemName: "film.stack")
                 .font(.system(size: 48, weight: .thin))
                 .foregroundStyle(.secondary)
-            Text("Open two videos to compare")
+            Text("Open or drag-and-drop two videos to compare")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.secondary)
+            Text("Drop on left side for Video A, right side for Video B")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
                 Button("Open Video A") { openFile(for: .a) }
                 Button("Open Video B") { openFile(for: .b) }
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    // MARK: - Help Overlay
+
+    var helpOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.75)
+                .ignoresSafeArea()
+                .onTapGesture { showHelp = false }
+
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    Text("Keyboard Shortcuts")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Button { showHelp = false } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 12)
+
+                Divider().opacity(0.3)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        shortcutSection("Playback", shortcuts: [
+                            ("Space", "Play / Pause"),
+                            ("\u{2190} \u{2192}", "Step back / forward one frame"),
+                            ("Home / End", "Go to start / end"),
+                        ])
+
+                        shortcutSection("View", shortcuts: [
+                            ("\u{2191} \u{2193}", "Zoom in / out"),
+                            ("1  2  4  8", "Zoom presets"),
+                            ("R", "Reset zoom & pan"),
+                            ("Drag", "Pan (when zoomed in)"),
+                            ("Scroll / Pinch", "Zoom at cursor"),
+                        ])
+
+                        shortcutSection("Comparison", shortcuts: [
+                            ("E", "Toggle Split / Error mode"),
+                            ("M", "Cycle error metric"),
+                            ("F", "Cycle visualization mode"),
+                            ("Drag handle", "Move split slider"),
+                        ])
+
+                        shortcutSection("Exposure & Gamma", shortcuts: [
+                            ("]  /  [", "Increase / decrease exposure (\u{00B1}0.1 EV)"),
+                            ("}  /  {", "Increase / decrease gamma (\u{00B1}0.1)"),
+                            ("0", "Reset exposure & gamma"),
+                        ])
+
+                        shortcutSection("General", shortcuts: [
+                            ("?", "Show / hide this help"),
+                            ("Esc", "Close help"),
+                        ])
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                }
+            }
+            .frame(width: 420, height: 480)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .shadow(color: .black.opacity(0.5), radius: 30)
+        }
+    }
+
+    func shortcutSection(_ title: String, shortcuts: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            ForEach(Array(shortcuts.enumerated()), id: \.offset) { _, shortcut in
+                HStack(alignment: .top, spacing: 0) {
+                    Text(shortcut.0)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .frame(width: 120, alignment: .trailing)
+
+                    Text(shortcut.1)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 12)
+
+                    Spacer()
+                }
+            }
         }
     }
 
@@ -180,13 +301,11 @@ struct ContentView: View {
 
             // Transport + controls
             HStack(spacing: 6) {
-                // Open buttons
                 compactButton("Open A", icon: "a.square.fill", color: .blue) { openFile(for: .a) }
                 compactButton("Open B", icon: "b.square.fill", color: .orange) { openFile(for: .b) }
 
                 Spacer().frame(width: 4)
 
-                // Transport
                 Group {
                     iconButton("backward.end.fill") { engine.seekToStart() }
                     iconButton("backward.frame.fill") { engine.stepBackward() }
@@ -199,7 +318,6 @@ struct ContentView: View {
 
                 Spacer().frame(width: 4)
 
-                // Display mode + error controls
                 errorControls
 
                 Spacer()
@@ -243,6 +361,11 @@ struct ContentView: View {
                     engine.resetView()
                 }
                 .help("Reset view (R)")
+
+                iconButton("questionmark.circle") {
+                    showHelp.toggle()
+                }
+                .help("Keyboard shortcuts (?)")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -254,8 +377,8 @@ struct ContentView: View {
 
     @ViewBuilder
     var errorControls: some View {
+        // Mode toggle + error pickers: require both videos
         if engine.hasVideoA && engine.hasVideoB {
-            // Display mode toggle
             Picker("", selection: $engine.displayMode) {
                 ForEach(DisplayMode.allCases, id: \.self) { mode in
                     Label(mode.label, systemImage: mode.icon).tag(mode)
@@ -268,7 +391,6 @@ struct ContentView: View {
             if engine.displayMode == .error {
                 Divider().frame(height: 16)
 
-                // Error metric
                 Picker("Metric", selection: $engine.errorMetric) {
                     ForEach(ErrorMetric.allCases, id: \.self) { m in
                         Text(m.label).tag(m)
@@ -277,7 +399,6 @@ struct ContentView: View {
                 .frame(width: 120)
                 .help("Error metric (M to cycle)")
 
-                // Tonemap mode
                 Picker("Vis", selection: $engine.tonemapMode) {
                     ForEach(TonemapMode.allCases, id: \.self) { m in
                         Text(m.label).tag(m)
@@ -285,39 +406,38 @@ struct ContentView: View {
                 }
                 .frame(width: 120)
                 .help("Visualization mode (F to cycle)")
-
-                Divider().frame(height: 16)
-
-                // Exposure
-                HStack(spacing: 3) {
-                    Text("EV")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                    Text("\(engine.exposure, specifier: "%+.1f")")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, alignment: .trailing)
-                }
-                Slider(value: $engine.exposure, in: -10...10, step: 0.5)
-                    .frame(width: 70)
-                    .controlSize(.mini)
-
-                // Gamma (only in gamma tonemap mode)
-                if engine.tonemapMode == .gamma {
-                    HStack(spacing: 3) {
-                        Text("\u{03B3}")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                        Text("\(engine.gamma, specifier: "%.1f")")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, alignment: .trailing)
-                    }
-                    Slider(value: $engine.gamma, in: 0.1...5.0, step: 0.1)
-                        .frame(width: 50)
-                        .controlSize(.mini)
-                }
             }
+        }
+
+        // Exposure & gamma: available with any video loaded
+        if engine.hasVideoA || engine.hasVideoB {
+            Divider().frame(height: 16)
+
+            HStack(spacing: 3) {
+                Text("EV")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text("\(engine.exposure, specifier: "%+.1f")")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .trailing)
+            }
+            Slider(value: $engine.exposure, in: -10...10, step: 0.1)
+                .frame(width: 70)
+                .controlSize(.mini)
+
+            HStack(spacing: 3) {
+                Text("\u{03B3}")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Text("\(engine.gamma, specifier: "%.1f")")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, alignment: .trailing)
+            }
+            Slider(value: $engine.gamma, in: 0.1...5.0, step: 0.1)
+                .frame(width: 50)
+                .controlSize(.mini)
         }
     }
 

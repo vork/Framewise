@@ -20,6 +20,8 @@ struct Uniforms {
     var tonemapMode: Int32 = 0      // 0=gamma, 1=falseColor, 2=posNeg
     var exposure: Float = 0.0
     var gamma: Float = 2.2
+    var dropHighlight: Int32 = -1   // -1=none, 0=left, 1=right
+    var _pad0: Float = 0
 }
 
 // MARK: - NSViewRepresentable
@@ -56,6 +58,19 @@ class ComparisonMTKView: MTKView {
     // Track which cursor is set
     private var isOpenHandCursor = false
 
+    // Drag-and-drop state
+    var dropSide: VideoSide? = nil  // which side is highlighted during drag
+
+    override init(frame: CGRect, device: MTLDevice?) {
+        super.init(frame: frame, device: device)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for area in trackingAreas { removeTrackingArea(area) }
@@ -63,6 +78,50 @@ class ComparisonMTKView: MTKView {
             rect: bounds,
             options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited],
             owner: self, userInfo: nil))
+    }
+
+    // MARK: - Drag and Drop
+
+    private func videoURL(from info: NSDraggingInfo) -> URL? {
+        guard let items = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL], let url = items.first else { return nil }
+
+        let videoExts = Set(["mov", "mp4", "m4v", "mkv", "webm", "avi", "ts", "m2ts",
+                             "mts", "flv", "wmv", "vob", "y4m", "mpg", "mpeg"])
+        guard videoExts.contains(url.pathExtension.lowercased()) else { return nil }
+        return url
+    }
+
+    private func sideForDrag(_ info: NSDraggingInfo) -> VideoSide {
+        let loc = convert(info.draggingLocation, from: nil)
+        return loc.x < bounds.width / 2 ? .a : .b
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard videoURL(from: sender) != nil else { return [] }
+        dropSide = sideForDrag(sender)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard videoURL(from: sender) != nil else { dropSide = nil; return [] }
+        dropSide = sideForDrag(sender)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropSide = nil
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { dropSide = nil }
+        guard let url = videoURL(from: sender), let engine else { return false }
+        let side = sideForDrag(sender)
+        Task { @MainActor in
+            engine.loadVideo(url: url, side: side)
+        }
+        return true
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -94,7 +153,7 @@ class ComparisonMTKView: MTKView {
             lastMousePoint = loc
             Task { @MainActor in
                 engine.panOffset = CGPoint(
-                    x: engine.panOffset.x + dx / engine.zoom,
+                    x: engine.panOffset.x - dx / engine.zoom,
                     y: engine.panOffset.y - dy / engine.zoom
                 )
             }
@@ -195,9 +254,9 @@ extension MetalComparisonView {
             self.commandQueue = device.makeCommandQueue()!
 
             // CIContext for color-managed pixel buffer → texture rendering
-            let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
+            // Working space is linear sRGB for accuracy; output to extendedSRGB (sRGB-encoded, HDR-capable)
             self.ciContext = CIContext(mtlDevice: device, options: [
-                .workingColorSpace: colorSpace,
+                .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
                 .cacheIntermediates: false
             ])
 
@@ -229,10 +288,10 @@ extension MetalComparisonView {
             view.framebufferOnly = true
             view.preferredFramesPerSecond = 120 // Match ProMotion if available
 
-            // Enable EDR for HDR display
+            // Set layer to displayP3 (sRGB-encoded) to match CIImage output
             if let metalLayer = view.layer as? CAMetalLayer {
                 metalLayer.wantsExtendedDynamicRangeContent = true
-                metalLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
+                metalLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedSRGB)
             }
 
             return view
@@ -291,7 +350,12 @@ extension MetalComparisonView {
                 errorMetric: Int32(engine.errorMetric.rawValue),
                 tonemapMode: Int32(engine.tonemapMode.rawValue),
                 exposure: Float(engine.exposure),
-                gamma: Float(engine.gamma)
+                gamma: Float(engine.gamma),
+                dropHighlight: {
+                    guard let view = view as? ComparisonMTKView, let side = view.dropSide else { return -1 }
+                    return side == .a ? 0 : 1
+                }(),
+                _pad0: 0
             )
 
             // Render comparison
@@ -338,7 +402,7 @@ extension MetalComparisonView {
 
             // CIImage from pixel buffer (inherits source color space from CVPixelBuffer metadata)
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let targetColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
+            let targetColorSpace = CGColorSpace(name: CGColorSpace.extendedSRGB)!
 
             // Scale CIImage to texture size if they differ (shouldn't normally happen)
             var image = ciImage
