@@ -155,15 +155,11 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         color = float4(0.08, 0.08, 0.08, 1.0);
     }
 
-    // CIImage outputs sRGB-encoded displayP3. For exposure/gamma adjustments,
-    // decode to linear, apply exposure, re-encode with user gamma.
-    if (abs(u.exposure) > 0.001 || abs(u.gamma - 2.2) > 0.05) {
-        // Decode sRGB to linear
+    // CIImage outputs sRGB-encoded values. Decode to linear for processing,
+    // then apply the selected visualization mode (same pipeline as error mode).
+    {
         float3 linear = pow(max(color.rgb, 0.0), float3(2.2));
-        // Apply exposure in linear space
-        linear = pow(2.0, u.exposure) * linear;
-        // Re-encode with user gamma (default 2.2 = back to sRGB)
-        color.rgb = pow(max(linear, 0.0), float3(1.0 / u.gamma));
+        color.rgb = applyTonemap(linear, u.tonemapMode, u.exposure, u.gamma);
     }
 
     // ── Comparison slider ────────────────────────────────────────

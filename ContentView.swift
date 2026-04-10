@@ -120,10 +120,8 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress("f") {
-            if engine.displayMode == .error {
-                let next = (engine.tonemapMode.rawValue + 1) % TonemapMode.allCases.count
-                engine.tonemapMode = TonemapMode(rawValue: next)!
-            }
+            let next = (engine.tonemapMode.rawValue + 1) % TonemapMode.allCases.count
+            engine.tonemapMode = TonemapMode(rawValue: next)!
             return .handled
         }
         // ── Exposure & Gamma ─────────────────────────────────
@@ -389,7 +387,7 @@ struct ContentView: View {
 
     @ViewBuilder
     var errorControls: some View {
-        // Mode toggle + error pickers: require both videos
+        // Mode toggle: require both videos
         if engine.hasVideoA && engine.hasVideoB {
             Picker("", selection: $engine.displayMode) {
                 ForEach(DisplayMode.allCases, id: \.self) { mode in
@@ -400,6 +398,7 @@ struct ContentView: View {
             .frame(width: 120)
             .help("Toggle Split/Error mode (E)")
 
+            // Error metric picker: error mode only
             if engine.displayMode == .error {
                 Divider().frame(height: 16)
 
@@ -410,15 +409,18 @@ struct ContentView: View {
                 }
                 .frame(width: 120)
                 .help("Error metric (M to cycle)")
-
-                Picker("Vis", selection: $engine.tonemapMode) {
-                    ForEach(TonemapMode.allCases, id: \.self) { m in
-                        Text(m.label).tag(m)
-                    }
-                }
-                .frame(width: 120)
-                .help("Visualization mode (F to cycle)")
             }
+        }
+
+        // Visualization mode: available with any video loaded
+        if engine.hasVideoA || engine.hasVideoB {
+            Picker("Vis", selection: $engine.tonemapMode) {
+                ForEach(TonemapMode.allCases, id: \.self) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .frame(width: 120)
+            .help("Visualization mode (F to cycle)")
         }
 
         // Exposure & gamma: available with any video loaded
