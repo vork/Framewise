@@ -15,7 +15,11 @@ struct Uniforms {
     var hasVideoA: Int32 = 0
     var hasVideoB: Int32 = 0
     var showSlider: Int32 = 1
-    var padding: Float = 0
+    var displayMode: Int32 = 0      // 0=split, 1=error
+    var errorMetric: Int32 = 0      // 0..4
+    var tonemapMode: Int32 = 0      // 0=gamma, 1=falseColor, 2=posNeg
+    var exposure: Float = 0.0
+    var gamma: Float = 2.2
 }
 
 // MARK: - NSViewRepresentable
@@ -67,7 +71,7 @@ class ComparisonMTKView: MTKView {
         let normX = loc.x / bounds.width
         let sliderX = engine.sliderPosition
 
-        if engine.hasVideoA && engine.hasVideoB && abs(normX - sliderX) < 0.025 {
+        if engine.hasVideoA && engine.hasVideoB && engine.displayMode == .split && abs(normX - sliderX) < 0.025 {
             isDraggingSlider = true
             NSCursor.resizeLeftRight.set()
         } else {
@@ -145,7 +149,7 @@ class ComparisonMTKView: MTKView {
             return
         }
         let normX = loc.x / bounds.width
-        if abs(normX - engine.sliderPosition) < 0.025 {
+        if engine.displayMode == .split && abs(normX - engine.sliderPosition) < 0.025 {
             NSCursor.resizeLeftRight.set()
             isOpenHandCursor = false
         } else if engine.zoom > 1.05 {
@@ -282,8 +286,12 @@ extension MetalComparisonView {
                 viewAspect: SIMD2<Float>(Float(drawableSize.width / drawableSize.height), 1.0),
                 hasVideoA: engine.hasVideoA ? 1 : 0,
                 hasVideoB: engine.hasVideoB ? 1 : 0,
-                showSlider: (engine.hasVideoA && engine.hasVideoB) ? 1 : 0,
-                padding: 0
+                showSlider: (engine.displayMode == .split && engine.hasVideoA && engine.hasVideoB) ? 1 : 0,
+                displayMode: Int32(engine.displayMode.rawValue),
+                errorMetric: Int32(engine.errorMetric.rawValue),
+                tonemapMode: Int32(engine.tonemapMode.rawValue),
+                exposure: Float(engine.exposure),
+                gamma: Float(engine.gamma)
             )
 
             // Render comparison

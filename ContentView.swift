@@ -1,11 +1,50 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Enum Display Labels
+
+extension DisplayMode {
+    var label: String {
+        switch self {
+        case .split: return "Split"
+        case .error: return "Error"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .split: return "rectangle.split.2x1"
+        case .error: return "waveform.path.ecg"
+        }
+    }
+}
+
+extension ErrorMetric {
+    var label: String {
+        switch self {
+        case .error: return "Error"
+        case .absoluteError: return "Abs Error"
+        case .squaredError: return "Sq Error"
+        case .relativeAbsolute: return "Rel Abs"
+        case .relativeSquared: return "Rel Sq"
+        }
+    }
+}
+
+extension TonemapMode {
+    var label: String {
+        switch self {
+        case .gamma: return "Gamma"
+        case .falseColor: return "False Color"
+        case .positiveNegative: return "Pos/Neg"
+        }
+    }
+}
+
+// MARK: - Content View
+
 struct ContentView: View {
     @StateObject private var engine = VideoEngine()
     @State private var frameInput: String = ""
-    @State private var isHoveringA = false
-    @State private var isHoveringB = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,19 +52,15 @@ struct ContentView: View {
             ZStack {
                 MetalComparisonView(engine: engine)
 
-                // Video name overlays - pinned to top corners
+                // Video name overlays
                 VStack {
                     HStack(alignment: .top) {
-                        // A label - top left
                         if let name = engine.videoNameA {
                             videoLabel(name, color: .blue)
                                 .padding(.leading, 12)
                                 .padding(.top, 10)
                         }
-
                         Spacer()
-
-                        // B label - top right
                         if let name = engine.videoNameB {
                             videoLabel(name, color: .orange)
                                 .padding(.trailing, 12)
@@ -36,14 +71,13 @@ struct ContentView: View {
                 }
                 .allowsHitTesting(false)
 
-                // Drop zone hints when no video loaded
+                // Empty state
                 if !engine.hasVideoA && !engine.hasVideoB {
                     emptyStateView
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Controls bar
             controlsBar
         }
         .background(Color.black)
@@ -61,18 +95,34 @@ struct ContentView: View {
         .onKeyPress("2") { engine.zoom = 2.0; return .handled }
         .onKeyPress("4") { engine.zoom = 4.0; return .handled }
         .onKeyPress("8") { engine.zoom = 8.0; return .handled }
+        .onKeyPress("e") {
+            if engine.hasVideoA && engine.hasVideoB {
+                engine.displayMode = engine.displayMode == .split ? .error : .split
+            }
+            return .handled
+        }
+        .onKeyPress("m") {
+            if engine.displayMode == .error {
+                let next = (engine.errorMetric.rawValue + 1) % ErrorMetric.allCases.count
+                engine.errorMetric = ErrorMetric(rawValue: next)!
+            }
+            return .handled
+        }
+        .onKeyPress("f") {
+            if engine.displayMode == .error {
+                let next = (engine.tonemapMode.rawValue + 1) % TonemapMode.allCases.count
+                engine.tonemapMode = TonemapMode(rawValue: next)!
+            }
+            return .handled
+        }
     }
 
     // MARK: - Video Label
 
     func videoLabel(_ name: String, color: Color) -> some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(name)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(name).lineLimit(1).truncationMode(.middle)
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(.white)
@@ -128,15 +178,13 @@ struct ContentView: View {
             .padding(.top, 6)
             .padding(.bottom, 2)
 
-            // Transport + info bar
+            // Transport + controls
             HStack(spacing: 6) {
                 // Open buttons
                 compactButton("Open A", icon: "a.square.fill", color: .blue) { openFile(for: .a) }
-                    .onHover { isHoveringA = $0 }
                 compactButton("Open B", icon: "b.square.fill", color: .orange) { openFile(for: .b) }
-                    .onHover { isHoveringB = $0 }
 
-                Spacer().frame(width: 8)
+                Spacer().frame(width: 4)
 
                 // Transport
                 Group {
@@ -149,6 +197,11 @@ struct ContentView: View {
                     iconButton("forward.end.fill") { engine.seekToEnd() }
                 }
 
+                Spacer().frame(width: 4)
+
+                // Display mode + error controls
+                errorControls
+
                 Spacer()
 
                 // Frame info
@@ -160,7 +213,6 @@ struct ContentView: View {
                 }
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
 
-                // Go to frame
                 TextField("Go to", text: $frameInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11, design: .monospaced))
@@ -175,7 +227,7 @@ struct ContentView: View {
                         }
                     }
 
-                Spacer().frame(width: 8)
+                Spacer().frame(width: 4)
 
                 // Zoom
                 HStack(spacing: 4) {
@@ -196,6 +248,77 @@ struct ContentView: View {
             .padding(.vertical, 6)
         }
         .background(Color(white: 0.1))
+    }
+
+    // MARK: - Error Controls
+
+    @ViewBuilder
+    var errorControls: some View {
+        if engine.hasVideoA && engine.hasVideoB {
+            // Display mode toggle
+            Picker("", selection: $engine.displayMode) {
+                ForEach(DisplayMode.allCases, id: \.self) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 120)
+            .help("Toggle Split/Error mode (E)")
+
+            if engine.displayMode == .error {
+                Divider().frame(height: 16)
+
+                // Error metric
+                Picker("Metric", selection: $engine.errorMetric) {
+                    ForEach(ErrorMetric.allCases, id: \.self) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                .frame(width: 120)
+                .help("Error metric (M to cycle)")
+
+                // Tonemap mode
+                Picker("Vis", selection: $engine.tonemapMode) {
+                    ForEach(TonemapMode.allCases, id: \.self) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                .frame(width: 120)
+                .help("Visualization mode (F to cycle)")
+
+                Divider().frame(height: 16)
+
+                // Exposure
+                HStack(spacing: 3) {
+                    Text("EV")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                    Text("\(engine.exposure, specifier: "%+.1f")")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                Slider(value: $engine.exposure, in: -10...10, step: 0.5)
+                    .frame(width: 70)
+                    .controlSize(.mini)
+
+                // Gamma (only in gamma tonemap mode)
+                if engine.tonemapMode == .gamma {
+                    HStack(spacing: 3) {
+                        Text("\u{03B3}")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text("\(engine.gamma, specifier: "%.1f")")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, alignment: .trailing)
+                    }
+                    Slider(value: $engine.gamma, in: 0.1...5.0, step: 0.1)
+                        .frame(width: 50)
+                        .controlSize(.mini)
+                }
+            }
+        }
     }
 
     // MARK: - Button Helpers

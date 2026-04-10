@@ -6,6 +6,25 @@ import QuartzCore
 
 enum VideoSide { case a, b }
 
+enum DisplayMode: Int, CaseIterable {
+    case split = 0
+    case error = 1
+}
+
+enum ErrorMetric: Int, CaseIterable {
+    case error = 0
+    case absoluteError = 1
+    case squaredError = 2
+    case relativeAbsolute = 3
+    case relativeSquared = 4
+}
+
+enum TonemapMode: Int, CaseIterable {
+    case gamma = 0
+    case falseColor = 1
+    case positiveNegative = 2
+}
+
 @MainActor
 final class VideoEngine: ObservableObject {
     // MARK: - Players
@@ -27,6 +46,13 @@ final class VideoEngine: ObservableObject {
     @Published var hasVideoB = false
     @Published var videoNameA: String?
     @Published var videoNameB: String?
+
+    // Error visualization
+    @Published var displayMode: DisplayMode = .split
+    @Published var errorMetric: ErrorMetric = .error
+    @Published var tonemapMode: TonemapMode = .gamma
+    @Published var exposure: Double = 0.0
+    @Published var gamma: Double = 2.2
 
     var frameRateA: Double = 24
     var frameRateB: Double = 24

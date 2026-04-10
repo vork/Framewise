@@ -14,15 +14,79 @@ struct Uniforms {
     float sliderPosition;
     float zoom;
     float2 panOffset;
-    float2 videoAspect;    // (videoWidth/videoHeight, 1) or (1, videoHeight/videoWidth)
-    float2 viewAspect;     // same but for view
+    float2 videoAspect;
+    float2 viewAspect;
     int hasVideoA;
     int hasVideoB;
     int showSlider;
-    float padding;
+    int displayMode;    // 0=split, 1=error
+    int errorMetric;    // 0=error, 1=abs, 2=squared, 3=relAbs, 4=relSquared
+    int tonemapMode;    // 0=gamma, 1=falseColor, 2=posNeg
+    float exposure;
+    float gamma;
 };
 
-// Full-screen triangle (3 verts, no index buffer needed)
+// ── False color map ──────────────────────────────────────────────────
+// 7-stop piecewise linear: black → blue → cyan → green → yellow → red → white
+float3 falseColorMap(float t) {
+    t = clamp(t, 0.0, 1.0);
+    const float3 stops[] = {
+        float3(0.0, 0.0, 0.0),     // 0: black
+        float3(0.0, 0.0, 0.6),     // 1: dark blue
+        float3(0.0, 0.6, 1.0),     // 2: cyan
+        float3(0.0, 1.0, 0.0),     // 3: green
+        float3(1.0, 1.0, 0.0),     // 4: yellow
+        float3(1.0, 0.0, 0.0),     // 5: red
+        float3(1.0, 1.0, 1.0),     // 6: white
+    };
+    float s = t * 6.0;
+    int idx = min(int(s), 5);
+    float frac = s - float(idx);
+    return mix(stops[idx], stops[idx + 1], frac);
+}
+
+// ── Error metrics ────────────────────────────────────────────────────
+float3 computeError(float3 a, float3 b, int metric) {
+    float3 diff = a - b;
+    switch (metric) {
+        case 0: return diff;                                    // Error (signed)
+        case 1: return abs(diff);                               // Absolute Error
+        case 2: return diff * diff;                             // Squared Error
+        case 3: return abs(diff) / (abs(b) + 0.01);            // Relative Absolute Error
+        case 4: return (diff * diff) / (b * b + 0.01);         // Relative Squared Error
+        default: return abs(diff);
+    }
+}
+
+// ── Tonemapping / visualization ──────────────────────────────────────
+float3 applyTonemap(float3 col, int mode, float exposure, float gamma) {
+    // Apply exposure (in stops)
+    col = pow(2.0, exposure) * col;
+
+    switch (mode) {
+        case 0: {
+            // Gamma: sign-preserving power curve
+            return sign(col) * pow(abs(col), float3(1.0 / gamma));
+        }
+        case 1: {
+            // False Color: logarithmic mapping to colormap
+            float avg = (col.r + col.g + col.b) / 3.0;
+            float t = log2(avg + 0.03125) / 10.0 + 0.5;
+            return falseColorMap(t);
+        }
+        case 2: {
+            // Positive/Negative: green = positive, red = negative
+            float avg = (col.r + col.g + col.b) / 3.0;
+            float pos = max(avg, 0.0);
+            float neg = max(-avg, 0.0);
+            return float3(neg, pos, 0.0);
+        }
+        default:
+            return col;
+    }
+}
+
+// ── Vertex shader ────────────────────────────────────────────────────
 vertex VertexOut vertexMain(uint vid [[vertex_id]],
                             constant Uniforms &u [[buffer(0)]]) {
     float2 pos = float2((vid == 1) ? 3.0 : -1.0,
@@ -31,21 +95,19 @@ vertex VertexOut vertexMain(uint vid [[vertex_id]],
     // CIImage renders with bottom-left origin into the texture,
     // so no Y-flip needed — the coordinate systems cancel out.
 
-    // Aspect ratio fitting: map view UV to video UV
+    // Aspect ratio fitting
     float viewAR = u.viewAspect.x;
     float videoAR = u.videoAspect.x;
 
     if (viewAR > videoAR) {
-        // View wider than video -> pillarbox
         float scale = videoAR / viewAR;
         uv.x = (uv.x - 0.5) / scale + 0.5;
     } else {
-        // View taller than video -> letterbox
         float scale = viewAR / videoAR;
         uv.y = (uv.y - 0.5) / scale + 0.5;
     }
 
-    // Apply zoom and pan (in video-space)
+    // Zoom and pan
     uv = (uv - 0.5) / u.zoom + 0.5 + u.panOffset;
 
     VertexOut out;
@@ -54,6 +116,7 @@ vertex VertexOut vertexMain(uint vid [[vertex_id]],
     return out;
 }
 
+// ── Fragment shader ──────────────────────────────────────────────────
 fragment float4 fragmentMain(VertexOut in [[stage_in]],
                              constant Uniforms &u [[buffer(0)]],
                              texture2d<float> texA [[texture(0)]],
@@ -63,13 +126,24 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     float2 tc = in.texCoord;
     bool inBounds = (tc.x >= 0.0 && tc.x <= 1.0 && tc.y >= 0.0 && tc.y <= 1.0);
 
-    // Which side of the slider are we on?
-    float normX = in.position.x / u.viewportSize.x;
-
-    float4 color;
     if (!inBounds) {
-        color = float4(0.03, 0.03, 0.03, 1.0);
-    } else if (normX < u.sliderPosition && u.hasVideoA != 0) {
+        return float4(0.03, 0.03, 0.03, 1.0);
+    }
+
+    // ── ERROR MODE ───────────────────────────────────────────────
+    if (u.displayMode == 1 && u.hasVideoA != 0 && u.hasVideoB != 0) {
+        float3 a = texA.sample(s, tc).rgb;
+        float3 b = texB.sample(s, tc).rgb;
+        float3 err = computeError(a, b, u.errorMetric);
+        float3 mapped = applyTonemap(err, u.tonemapMode, u.exposure, u.gamma);
+        return float4(mapped, 1.0);
+    }
+
+    // ── SPLIT MODE ───────────────────────────────────────────────
+    float normX = in.position.x / u.viewportSize.x;
+    float4 color;
+
+    if (normX < u.sliderPosition && u.hasVideoA != 0) {
         color = texA.sample(s, tc);
     } else if (u.hasVideoB != 0) {
         color = texB.sample(s, tc);
@@ -79,19 +153,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         color = float4(0.08, 0.08, 0.08, 1.0);
     }
 
-    // Draw comparison slider
+    // ── Comparison slider ────────────────────────────────────────
     if (u.showSlider != 0 && (u.hasVideoA != 0 || u.hasVideoB != 0)) {
         float sliderPx = u.sliderPosition * u.viewportSize.x;
         float dx = abs(in.position.x - sliderPx);
 
-        // Thin line with shadow
         if (dx < 1.0) {
             color = float4(1.0, 1.0, 1.0, 1.0);
         } else if (dx < 3.0) {
             color = mix(color, float4(0.0, 0.0, 0.0, 1.0), 0.4);
         }
 
-        // Handle circle in the center
         float2 handleCenter = float2(sliderPx, u.viewportSize.y * 0.5);
         float handleDist = length(float2(in.position.x, in.position.y) - handleCenter);
         if (handleDist < 16.0) {
@@ -100,13 +172,10 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
             color = float4(0.2, 0.2, 0.2, 1.0);
         }
 
-        // Small triangles on the handle
         float2 rel = float2(in.position.x, in.position.y) - handleCenter;
-        // Left triangle
         if (rel.x > -12.0 && rel.x < -4.0 && abs(rel.y) < (rel.x + 12.0) * 0.7) {
             color = float4(0.2, 0.2, 0.2, 1.0);
         }
-        // Right triangle
         if (rel.x > 4.0 && rel.x < 12.0 && abs(rel.y) < (12.0 - rel.x) * 0.7) {
             color = float4(0.2, 0.2, 0.2, 1.0);
         }
