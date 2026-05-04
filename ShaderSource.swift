@@ -16,6 +16,8 @@ struct Uniforms {
     float2 panOffset;
     float2 videoAspect;
     float2 viewAspect;
+    float2 videoSizeA;
+    float2 videoSizeB;
     int hasVideoA;
     int hasVideoB;
     int showSlider;
@@ -25,6 +27,7 @@ struct Uniforms {
     float exposure;
     float gamma;
     int dropHighlight;  // -1=none, 0=left, 1=right
+    int pixelInspect;   // 0=off, 1=auto
     float _pad0;
 };
 
@@ -88,6 +91,162 @@ float3 applyTonemap(float3 col, int mode, float exposure, float gamma) {
     }
 }
 
+// ── Bitmap font (3×5) for pixel-value overlay ────────────────────────
+// Glyph indices: 0..9 = digits, 10 = '.', 11 = '-', 12 = ' ',
+// 13 = 'N', 14 = 'A', 15 = 'I', 16 = 'F'.
+// 15 bits per glyph, packed top-row first, MSB = top-left.
+uint glyphBits(int g) {
+    switch (g) {
+        case 0:  return 0b111101101101111u; // 0
+        case 1:  return 0b010110010010111u; // 1
+        case 2:  return 0b111001111100111u; // 2
+        case 3:  return 0b111001111001111u; // 3
+        case 4:  return 0b101101111001001u; // 4
+        case 5:  return 0b111100111001111u; // 5
+        case 6:  return 0b111100111101111u; // 6
+        case 7:  return 0b111001001001001u; // 7
+        case 8:  return 0b111101111101111u; // 8
+        case 9:  return 0b111101111001111u; // 9
+        case 10: return 0b000000000000010u; // .
+        case 11: return 0b000000111000000u; // -
+        case 13: return 0b101111111101101u; // N
+        case 14: return 0b010101111101101u; // A
+        case 15: return 0b111010010010111u; // I
+        case 16: return 0b111100111100100u; // F
+        default: return 0u;                 // space / unknown
+    }
+}
+
+bool glyphPixel(int g, int x, int y) {
+    if (x < 0 || x > 2 || y < 0 || y > 4) return false;
+    int idx = (4 - y) * 3 + (2 - x);
+    return ((glyphBits(g) >> uint(idx)) & 1u) != 0u;
+}
+
+// Format a float into a fixed 6-character window, returned in chars[0..5]:
+//   chars[0] = sign (' ' or '-')
+//   chars[1..5] = magnitude, decimal placed for the active range
+// HDR-aware: handles |v| up to ~9999 with at least 1 fractional digit
+// while values are in single-digit range. Special cases: NaN, ±Inf.
+struct CharBuf { int c[6]; };
+
+CharBuf formatValue(float v) {
+    CharBuf out;
+    out.c[0] = 12; out.c[1] = 12; out.c[2] = 12;
+    out.c[3] = 12; out.c[4] = 12; out.c[5] = 12;
+
+    if (isnan(v)) {
+        out.c[0] = 12;          // ' '
+        out.c[1] = 12;          // ' '
+        out.c[2] = 13;          // N
+        out.c[3] = 14;          // A
+        out.c[4] = 13;          // N
+        out.c[5] = 12;          // ' '
+        return out;
+    }
+    if (isinf(v)) {
+        out.c[0] = (v < 0) ? 11 : 12;
+        out.c[1] = 12;
+        out.c[2] = 15;          // I
+        out.c[3] = 13;          // N
+        out.c[4] = 16;          // F
+        out.c[5] = 12;
+        return out;
+    }
+
+    bool neg = (v < 0.0);
+    out.c[0] = neg ? 11 : 12;
+    float a = clamp(abs(v), 0.0, 9999.999);
+
+    if (a < 10.0) {
+        // X.XXX
+        int i = int(a);
+        int frac = int(round((a - float(i)) * 1000.0));
+        if (frac >= 1000) { i += 1; frac -= 1000; }
+        out.c[1] = i % 10;
+        out.c[2] = 10;
+        out.c[3] = (frac / 100) % 10;
+        out.c[4] = (frac / 10) % 10;
+        out.c[5] = frac % 10;
+    } else if (a < 100.0) {
+        // XX.XX
+        int i = int(a);
+        int frac = int(round((a - float(i)) * 100.0));
+        if (frac >= 100) { i += 1; frac -= 100; }
+        out.c[1] = (i / 10) % 10;
+        out.c[2] = i % 10;
+        out.c[3] = 10;
+        out.c[4] = (frac / 10) % 10;
+        out.c[5] = frac % 10;
+    } else if (a < 1000.0) {
+        // XXX.X
+        int i = int(a);
+        int frac = int(round((a - float(i)) * 10.0));
+        if (frac >= 10) { i += 1; frac -= 10; }
+        out.c[1] = (i / 100) % 10;
+        out.c[2] = (i / 10) % 10;
+        out.c[3] = i % 10;
+        out.c[4] = 10;
+        out.c[5] = frac % 10;
+    } else {
+        // XXXX (no decimal point)
+        int i = int(round(a));
+        out.c[1] = (i / 1000) % 10;
+        out.c[2] = (i / 100) % 10;
+        out.c[3] = (i / 10) % 10;
+        out.c[4] = i % 10;
+        out.c[5] = 12;
+    }
+    return out;
+}
+
+// Draws three lines of values (e.g. R/G/B) inside the [0,1]² cell.
+// Returns rgba — alpha=0 if outside any glyph stroke.
+//
+// Layout (font-pixel grid):
+//   margin 2 px | 6 chars × (3 cols + 1 gap) − 1 gap = 23 px | margin 2 px
+//   margin 2 px | 3 lines × (5 rows + 1 gap) − 1 gap = 17 px | margin 2 px
+// → cell content rendered on a virtual 27×21 grid.
+float4 renderPixelText(float2 cellPos, float3 values, float3 color0,
+                       float3 color1, float3 color2) {
+    // Flip Y so text reads top-down (cellPos.y=1 is top of cell in our space)
+    float2 p = float2(cellPos.x, 1.0 - cellPos.y);
+
+    const float W = 27.0;
+    const float H = 21.0;
+    float fx = p.x * W - 2.0;
+    float fy = p.y * H - 2.0;
+
+    if (fx < 0.0 || fx >= 23.0 || fy < 0.0 || fy >= 17.0) {
+        return float4(0.0);
+    }
+
+    int x = int(fx);
+    int y = int(fy);
+
+    // Identify line and intra-line row
+    int line;
+    int charY;
+    if (y < 5)        { line = 0; charY = y; }
+    else if (y == 5)  { return float4(0.0); }
+    else if (y < 11)  { line = 1; charY = y - 6; }
+    else if (y == 11) { return float4(0.0); }
+    else              { line = 2; charY = y - 12; }
+
+    int slot = x / 4;
+    int charX = x % 4;
+    if (slot < 0 || slot >= 6) return float4(0.0);
+    if (charX >= 3) return float4(0.0); // gap column
+
+    float v = (line == 0) ? values.r : (line == 1) ? values.g : values.b;
+    CharBuf buf = formatValue(v);
+    int g = buf.c[slot];
+    if (!glyphPixel(g, charX, charY)) return float4(0.0);
+
+    float3 col = (line == 0) ? color0 : (line == 1) ? color1 : color2;
+    return float4(col, 1.0);
+}
+
 // ── Vertex shader ────────────────────────────────────────────────────
 vertex VertexOut vertexMain(uint vid [[vertex_id]],
                             constant Uniforms &u [[buffer(0)]]) {
@@ -123,7 +282,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
                              constant Uniforms &u [[buffer(0)]],
                              texture2d<float> texA [[texture(0)]],
                              texture2d<float> texB [[texture(1)]]) {
-    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    constexpr sampler sLinear(filter::linear, address::clamp_to_edge);
 
     float2 tc = in.texCoord;
     bool inBounds = (tc.x >= 0.0 && tc.x <= 1.0 && tc.y >= 0.0 && tc.y <= 1.0);
@@ -132,61 +291,143 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         return float4(0.03, 0.03, 0.03, 1.0);
     }
 
-    // ── ERROR MODE ───────────────────────────────────────────────
-    if (u.displayMode == 1 && u.hasVideoA != 0 && u.hasVideoB != 0) {
-        float3 a = texA.sample(s, tc).rgb;
-        float3 b = texB.sample(s, tc).rgb;
+    // ── Pixel-on-screen size (for grid + value overlay) ──────────
+    // Use the active video's resolution so the grid aligns with real pixels.
+    float2 sizeA = max(u.videoSizeA, float2(1.0));
+    float2 sizeB = max(u.videoSizeB, float2(1.0));
+    float2 refSize = (u.hasVideoA != 0) ? sizeA : sizeB;
+
+    // Screen pixels per video pixel along each axis. Derivatives must be
+    // evaluated in uniform control flow, so compute once up front.
+    float dxTC = max(abs(dfdx(tc.x)), 1e-7);
+    float dyTC = max(abs(dfdy(tc.y)), 1e-7);
+    float pixelOnScreen = 1.0 / (dxTC * refSize.x);
+
+    bool inspectEnabled = (u.pixelInspect != 0);
+    bool useNearest = inspectEnabled && pixelOnScreen > 6.0;
+    bool showGrid   = inspectEnabled && pixelOnScreen > 18.0;
+    bool showText   = inspectEnabled && pixelOnScreen > 56.0;
+
+    // Per-side nearest-pixel tap (so each video shows its own true sample)
+    float2 tcA = tc;
+    float2 tcB = tc;
+    if (useNearest) {
+        tcA = (floor(tc * sizeA) + 0.5) / sizeA;
+        tcB = (floor(tc * sizeB) + 0.5) / sizeB;
+    }
+
+    // ── Compute base output color and the values to display ──────
+    float4 outColor;
+    float3 valuesToShow = float3(0.0);
+    bool valuesValid = false;
+    bool isErrorMode = (u.displayMode == 1 && u.hasVideoA != 0 && u.hasVideoB != 0);
+    bool fragmentOnSideA = false;   // true if split-mode pixel reads from A
+
+    if (isErrorMode) {
+        float3 a = texA.sample(sLinear, tcA).rgb;
+        float3 b = texB.sample(sLinear, tcB).rgb;
         float3 err = computeError(a, b, u.errorMetric);
+        valuesToShow = err;
+        valuesValid = true;
         float3 mapped = applyTonemap(err, u.tonemapMode, u.exposure, u.gamma);
-        return float4(mapped, 1.0);
-    }
-
-    // ── SPLIT MODE ───────────────────────────────────────────────
-    float normX = in.position.x / u.viewportSize.x;
-    float4 color;
-
-    if (normX < u.sliderPosition && u.hasVideoA != 0) {
-        color = texA.sample(s, tc);
-    } else if (u.hasVideoB != 0) {
-        color = texB.sample(s, tc);
-    } else if (u.hasVideoA != 0) {
-        color = texA.sample(s, tc);
+        outColor = float4(mapped, 1.0);
     } else {
-        color = float4(0.08, 0.08, 0.08, 1.0);
-    }
+        float normX = in.position.x / u.viewportSize.x;
+        float4 color;
 
-    // CIImage outputs sRGB-encoded values. Decode to linear for processing,
-    // then apply the selected visualization mode (same pipeline as error mode).
-    {
+        if (normX < u.sliderPosition && u.hasVideoA != 0) {
+            color = texA.sample(sLinear, tcA);
+            valuesToShow = color.rgb;
+            valuesValid = true;
+            fragmentOnSideA = true;
+        } else if (u.hasVideoB != 0) {
+            color = texB.sample(sLinear, tcB);
+            valuesToShow = color.rgb;
+            valuesValid = true;
+            fragmentOnSideA = false;
+        } else if (u.hasVideoA != 0) {
+            color = texA.sample(sLinear, tcA);
+            valuesToShow = color.rgb;
+            valuesValid = true;
+            fragmentOnSideA = true;
+        } else {
+            color = float4(0.08, 0.08, 0.08, 1.0);
+        }
+
+        // CIImage outputs sRGB-encoded values. Decode to linear for processing,
+        // then apply the selected visualization mode (same pipeline as error mode).
         float3 linear = pow(max(color.rgb, 0.0), float3(2.2));
         color.rgb = applyTonemap(linear, u.tonemapMode, u.exposure, u.gamma);
+        outColor = color;
     }
 
-    // ── Comparison slider ────────────────────────────────────────
+    // ── Pixel grid overlay ───────────────────────────────────────
+    if (showGrid && valuesValid) {
+        // Use the size matching the video the fragment is sampling from.
+        float2 gridSize = isErrorMode
+            ? sizeA
+            : (fragmentOnSideA ? sizeA : (u.hasVideoB != 0 ? sizeB : sizeA));
+        float2 cellPos = fract(tc * gridSize);
+        // Distance from nearest cell edge, converted to screen pixels.
+        // cellPos is in cell-UV space (one cell = [0,1]); one cell spans
+        // 1/gridSize in tc-space, and tc advances by d*TC per screen pixel,
+        // so screen-pixel distance = cell-UV distance / (gridSize * d*TC).
+        float2 d = min(cellPos, 1.0 - cellPos);
+        float pxX = d.x / (gridSize.x * dxTC);
+        float pxY = d.y / (gridSize.y * dyTC);
+        float minPx = min(pxX, pxY);
+        if (minPx < 1.0) {
+            float bright = (outColor.r + outColor.g + outColor.b) / 3.0;
+            float3 gridColor = (bright > 0.5) ? float3(0.0) : float3(1.0);
+            // Soft ~1-screen-pixel-wide anti-aliased line.
+            float a = 1.0 - smoothstep(0.0, 1.0, minPx);
+            outColor.rgb = mix(outColor.rgb, gridColor, a * 0.55);
+        }
+    }
+
+    // ── Pixel value overlay ──────────────────────────────────────
+    if (showText && valuesValid) {
+        float2 textSize = isErrorMode
+            ? sizeA
+            : (fragmentOnSideA ? sizeA : (u.hasVideoB != 0 ? sizeB : sizeA));
+        float2 cellPos = fract(tc * textSize);
+        // Contrast color picked from base output: dark text on bright cells,
+        // bright text on dark cells. Channel-tinted so R/G/B lines are
+        // identifiable at a glance.
+        float bright = (outColor.r + outColor.g + outColor.b) / 3.0;
+        bool darkCell = bright <= 0.5;
+        float3 cR = darkCell ? float3(1.00, 0.55, 0.55) : float3(0.50, 0.00, 0.00);
+        float3 cG = darkCell ? float3(0.55, 1.00, 0.55) : float3(0.00, 0.45, 0.00);
+        float3 cB = darkCell ? float3(0.55, 0.75, 1.00) : float3(0.00, 0.10, 0.55);
+        float4 t = renderPixelText(cellPos, valuesToShow, cR, cG, cB);
+        outColor.rgb = mix(outColor.rgb, t.rgb, t.a);
+    }
+
+    // ── Comparison slider (split mode only) ──────────────────────
     if (u.showSlider != 0 && (u.hasVideoA != 0 || u.hasVideoB != 0)) {
         float sliderPx = u.sliderPosition * u.viewportSize.x;
         float dx = abs(in.position.x - sliderPx);
 
         if (dx < 1.0) {
-            color = float4(1.0, 1.0, 1.0, 1.0);
+            outColor = float4(1.0, 1.0, 1.0, 1.0);
         } else if (dx < 3.0) {
-            color = mix(color, float4(0.0, 0.0, 0.0, 1.0), 0.4);
+            outColor = mix(outColor, float4(0.0, 0.0, 0.0, 1.0), 0.4);
         }
 
         float2 handleCenter = float2(sliderPx, u.viewportSize.y * 0.5);
         float handleDist = length(float2(in.position.x, in.position.y) - handleCenter);
         if (handleDist < 16.0) {
-            color = float4(1.0, 1.0, 1.0, 1.0);
+            outColor = float4(1.0, 1.0, 1.0, 1.0);
         } else if (handleDist < 18.0) {
-            color = float4(0.2, 0.2, 0.2, 1.0);
+            outColor = float4(0.2, 0.2, 0.2, 1.0);
         }
 
         float2 rel = float2(in.position.x, in.position.y) - handleCenter;
         if (rel.x > -12.0 && rel.x < -4.0 && abs(rel.y) < (rel.x + 12.0) * 0.7) {
-            color = float4(0.2, 0.2, 0.2, 1.0);
+            outColor = float4(0.2, 0.2, 0.2, 1.0);
         }
         if (rel.x > 4.0 && rel.x < 12.0 && abs(rel.y) < (12.0 - rel.x) * 0.7) {
-            color = float4(0.2, 0.2, 0.2, 1.0);
+            outColor = float4(0.2, 0.2, 0.2, 1.0);
         }
     }
 
@@ -199,15 +440,15 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
             float3 tint = (u.dropHighlight == 0)
                 ? float3(0.2, 0.4, 1.0)   // blue for A
                 : float3(1.0, 0.6, 0.1);  // orange for B
-            color = float4(mix(color.rgb, tint, 0.25), 1.0);
+            outColor = float4(mix(outColor.rgb, tint, 0.25), 1.0);
         }
         // Divider line down the center
         float cx = u.viewportSize.x * 0.5;
         if (abs(in.position.x - cx) < 1.5) {
-            color = float4(1.0);
+            outColor = float4(1.0);
         }
     }
 
-    return color;
+    return outColor;
 }
 """

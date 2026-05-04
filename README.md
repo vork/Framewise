@@ -14,6 +14,7 @@ A native macOS app for side-by-side video comparison with a split-view slider an
 - **HDR support** — displays HDR content on capable screens via EDR, falls back to SDR automatically
 - **4K and beyond** — handles any resolution your hardware supports
 - **Deep zoom** — zoom up to 200x to inspect individual pixels
+- **Pixel inspection** — when zoomed in close, shows pixel grid lines and per-channel RGB values overlaid on each pixel (HDR-aware, inspired by [tev](https://github.com/Tom94/tev)). Works in both Split and Error modes.
 - **Exposure & gamma control** — adjust in both split and error modes, available even with a single video
 - **Frame-accurate sync** — both videos stay perfectly synchronized
 - **Frame stepping** — navigate frame by frame with arrow keys
@@ -70,6 +71,7 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Increase / decrease exposure | `]` / `[` |
 | Increase / decrease gamma | `}` / `{` (Shift + `]` / `[`) |
 | Reset exposure & gamma | `0` |
+| Toggle pixel inspection | `P` |
 | Show keyboard shortcuts | `?` |
 
 **Drag-and-drop:** Drop a video file onto the left half of the window to load it as Video A, or onto the right half for Video B. A blue or orange highlight indicates which side will receive the file.

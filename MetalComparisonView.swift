@@ -12,6 +12,8 @@ struct Uniforms {
     var panOffset: SIMD2<Float> = .zero
     var videoAspect: SIMD2<Float> = SIMD2<Float>(16.0 / 9.0, 1.0)
     var viewAspect: SIMD2<Float> = SIMD2<Float>(16.0 / 9.0, 1.0)
+    var videoSizeA: SIMD2<Float> = SIMD2<Float>(1920, 1080)
+    var videoSizeB: SIMD2<Float> = SIMD2<Float>(1920, 1080)
     var hasVideoA: Int32 = 0
     var hasVideoB: Int32 = 0
     var showSlider: Int32 = 1
@@ -21,6 +23,7 @@ struct Uniforms {
     var exposure: Float = 0.0
     var gamma: Float = 2.2
     var dropHighlight: Int32 = -1   // -1=none, 0=left, 1=right
+    var pixelInspect: Int32 = 1     // 0=off, 1=auto (grid+values when zoomed in)
     var _pad0: Float = 0
 }
 
@@ -343,6 +346,10 @@ extension MetalComparisonView {
                 panOffset: SIMD2<Float>(Float(engine.panOffset.x), Float(engine.panOffset.y)),
                 videoAspect: SIMD2<Float>(Float(ar), 1.0),
                 viewAspect: SIMD2<Float>(Float(drawableSize.width / drawableSize.height), 1.0),
+                videoSizeA: SIMD2<Float>(Float(max(1, engine.videoSizeA.width)),
+                                         Float(max(1, engine.videoSizeA.height))),
+                videoSizeB: SIMD2<Float>(Float(max(1, engine.videoSizeB.width)),
+                                         Float(max(1, engine.videoSizeB.height))),
                 hasVideoA: engine.hasVideoA ? 1 : 0,
                 hasVideoB: engine.hasVideoB ? 1 : 0,
                 showSlider: (engine.displayMode == .split && engine.hasVideoA && engine.hasVideoB) ? 1 : 0,
@@ -355,14 +362,15 @@ extension MetalComparisonView {
                     guard let view = view as? ComparisonMTKView, let side = view.dropSide else { return -1 }
                     return side == .a ? 0 : 1
                 }(),
+                pixelInspect: engine.pixelInspect ? 1 : 0,
                 _pad0: 0
             )
 
             // Render comparison
             let encoder = cb.makeRenderCommandEncoder(descriptor: rpd)!
             encoder.setRenderPipelineState(pipelineState)
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentTexture(textureA ?? placeholderTexture, index: 0)
             encoder.setFragmentTexture(textureB ?? placeholderTexture, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

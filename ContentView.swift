@@ -130,6 +130,8 @@ struct ContentView: View {
         .onKeyPress("}") { engine.gamma = min(5, engine.gamma + 0.1); return .handled }
         .onKeyPress("{") { engine.gamma = max(0.1, engine.gamma - 0.1); return .handled }
         .onKeyPress("0") { engine.exposure = 0; engine.gamma = 2.2; return .handled }
+        // ── Pixel inspection ─────────────────────────────────
+        .onKeyPress("p") { engine.pixelInspect.toggle(); return .handled }
         // ── Help ─────────────────────────────────────────────
         .onKeyPress("?") { showHelp.toggle(); return .handled }
         .onKeyPress(.escape) {
@@ -236,6 +238,11 @@ struct ContentView: View {
                             ("]  /  [", "Increase / decrease exposure (\u{00B1}0.1 EV)"),
                             ("}  /  {", "Increase / decrease gamma (\u{00B1}0.1)"),
                             ("0", "Reset exposure & gamma"),
+                        ])
+
+                        shortcutSection("Pixel Inspection", shortcuts: [
+                            ("P", "Toggle pixel grid + RGB values overlay"),
+                            ("Zoom in", "Auto-shows when pixels are large enough"),
                         ])
 
                         shortcutSection("General", shortcuts: [

@@ -60,6 +60,11 @@ final class VideoEngine: ObservableObject {
     @Published var exposure: Double = 0.0
     @Published var gamma: Double = 2.2
 
+    // Pixel inspection (auto-shows grid + RGB values when zoomed in close enough)
+    @Published var pixelInspect: Bool = true {
+        didSet { UserDefaults.standard.set(pixelInspect, forKey: "pixelInspect") }
+    }
+
     var frameRateA: Double = 24
     var frameRateB: Double = 24
     var videoSizeA: CGSize = CGSize(width: 1920, height: 1080)
@@ -76,6 +81,9 @@ final class VideoEngine: ObservableObject {
         if let v = DisplayMode(rawValue: ud.integer(forKey: "displayMode")) { displayMode = v }
         if let v = ErrorMetric(rawValue: ud.integer(forKey: "errorMetric")) { errorMetric = v }
         if let v = TonemapMode(rawValue: ud.integer(forKey: "tonemapMode")) { tonemapMode = v }
+        if ud.object(forKey: "pixelInspect") != nil {
+            pixelInspect = ud.bool(forKey: "pixelInspect")
+        }
     }
 
     var currentTimeString: String { formatTime(currentTime) }
