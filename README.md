@@ -1,6 +1,6 @@
 # Framewise
 
-A native macOS app for side-by-side video comparison with a split-view slider and error visualization. Built with Swift, Metal, and AVFoundation.
+A native macOS app for side-by-side video and image comparison with a split-view slider and error visualization. Built with Swift, Metal, AVFoundation, and Core Image.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
@@ -8,10 +8,10 @@ A native macOS app for side-by-side video comparison with a split-view slider an
 
 ## Features
 
-- **Side-by-side comparison** with draggable slider
-- **Error visualization mode** — view the difference between two videos with multiple error metrics and tonemapping options (inspired by [tev](https://github.com/Tom94/tev))
-- **Drag-and-drop** — drop video files onto the left or right half of the window to load them as Video A or B
-- **HDR support** — displays HDR content on capable screens via EDR, falls back to SDR automatically
+- **Side-by-side comparison** with draggable slider — videos, still images, or any mix of the two
+- **Error visualization mode** — view the difference between the two sources with multiple error metrics and tonemapping options (inspired by [tev](https://github.com/Tom94/tev))
+- **Drag-and-drop** — drop a video or image onto the left or right half of the window to load it as A or B
+- **HDR support** — HDR videos, EXR/HDR HEIC stills, and wide-gamut images flow through Core Image and display on EDR-capable screens; SDR falls back automatically
 - **4K and beyond** — handles any resolution your hardware supports
 - **Deep zoom** — zoom up to 200x to inspect individual pixels
 - **Pixel inspection** — when zoomed in close, shows pixel grid lines and per-channel RGB values overlaid on each pixel (HDR-aware, inspired by [tev](https://github.com/Tom94/tev)). Works in both Split and Error modes.
@@ -20,7 +20,10 @@ A native macOS app for side-by-side video comparison with a split-view slider an
 - **Frame stepping** — navigate frame by frame with arrow keys
 - **Go to frame** — jump to any frame number directly
 - **Persistent settings** — display mode, error metric, and visualization mode are remembered across sessions
-- **All modern formats** — H.264, HEVC, ProRes, AV1, VP9, and anything AVFoundation supports
+- **Multiple windows** — `⌘N` opens an independent comparison window; compare as many pairs as your hardware allows
+- **All modern formats**
+  - **Video:** H.264, HEVC, ProRes, AV1, VP9, and anything AVFoundation supports
+  - **Image:** PNG, JPEG, WebP, HEIC/HEIF, TIFF, BMP, OpenEXR, Radiance HDR, and Camera RAW (via ImageIO)
 - **In-app help** — press `?` to see all keyboard shortcuts
 
 ## Display Modes
@@ -74,7 +77,7 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Toggle pixel inspection | `P` |
 | Show keyboard shortcuts | `?` |
 
-**Drag-and-drop:** Drop a video file onto the left half of the window to load it as Video A, or onto the right half for Video B. A blue or orange highlight indicates which side will receive the file.
+**Drag-and-drop:** Drop a video or image file onto the left half of the window to load it as A, or onto the right half for B. A blue or orange highlight indicates which side will receive the file. You can mix kinds — e.g. compare a rendered EXR against the encoded video, or two stills against each other.
 
 ## Building
 

@@ -85,15 +85,11 @@ class ComparisonMTKView: MTKView {
 
     // MARK: - Drag and Drop
 
-    private func videoURL(from info: NSDraggingInfo) -> URL? {
+    private func mediaURL(from info: NSDraggingInfo) -> URL? {
         guard let items = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
         ]) as? [URL], let url = items.first else { return nil }
-
-        let videoExts = Set(["mov", "mp4", "m4v", "mkv", "webm", "avi", "ts", "m2ts",
-                             "mts", "flv", "wmv", "vob", "y4m", "mpg", "mpeg"])
-        guard videoExts.contains(url.pathExtension.lowercased()) else { return nil }
-        return url
+        return MediaType.isSupported(url) ? url : nil
     }
 
     private func sideForDrag(_ info: NSDraggingInfo) -> VideoSide {
@@ -102,13 +98,13 @@ class ComparisonMTKView: MTKView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard videoURL(from: sender) != nil else { return [] }
+        guard mediaURL(from: sender) != nil else { return [] }
         dropSide = sideForDrag(sender)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard videoURL(from: sender) != nil else { dropSide = nil; return [] }
+        guard mediaURL(from: sender) != nil else { dropSide = nil; return [] }
         dropSide = sideForDrag(sender)
         return .copy
     }
@@ -119,10 +115,10 @@ class ComparisonMTKView: MTKView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         defer { dropSide = nil }
-        guard let url = videoURL(from: sender), let engine else { return false }
+        guard let url = mediaURL(from: sender), let engine else { return false }
         let side = sideForDrag(sender)
         Task { @MainActor in
-            engine.loadVideo(url: url, side: side)
+            engine.loadMedia(url: url, side: side)
         }
         return true
     }
@@ -241,6 +237,11 @@ extension MetalComparisonView {
         var textureSizeA: CGSize = .zero
         var textureSizeB: CGSize = .zero
 
+        // Tracks the last image-version uploaded into textureA/B so we re-render
+        // the static image only when the user loads a new file.
+        var renderedImageVersionA: Int = -1
+        var renderedImageVersionB: Int = -1
+
         // Placeholder 1x1 black texture for when no video is loaded
         var placeholderTexture: MTLTexture!
 
@@ -323,18 +324,40 @@ extension MetalComparisonView {
             // Get current playback time
             let itemTime = engine.playerA?.currentTime() ?? engine.playerB?.currentTime() ?? .zero
 
-            // Update texture A from pixel buffer
-            if let output = engine.videoOutputA,
-               output.hasNewPixelBuffer(forItemTime: itemTime),
-               let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                textureA = renderPixelBufferToTexture(pb, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
+            // Update texture A based on what's loaded on side A.
+            switch engine.mediaKindA {
+            case .video:
+                if let output = engine.videoOutputA,
+                   output.hasNewPixelBuffer(forItemTime: itemTime),
+                   let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
+                    textureA = renderPixelBufferToTexture(pb, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
+                }
+                renderedImageVersionA = -1
+            case .image:
+                if let img = engine.imageA, engine.imageVersionA != renderedImageVersionA {
+                    textureA = renderCIImageToTexture(img, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
+                    renderedImageVersionA = engine.imageVersionA
+                }
+            case .none:
+                renderedImageVersionA = -1
             }
 
-            // Update texture B from pixel buffer
-            if let output = engine.videoOutputB,
-               output.hasNewPixelBuffer(forItemTime: itemTime),
-               let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                textureB = renderPixelBufferToTexture(pb, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
+            // Update texture B based on what's loaded on side B.
+            switch engine.mediaKindB {
+            case .video:
+                if let output = engine.videoOutputB,
+                   output.hasNewPixelBuffer(forItemTime: itemTime),
+                   let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
+                    textureB = renderPixelBufferToTexture(pb, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
+                }
+                renderedImageVersionB = -1
+            case .image:
+                if let img = engine.imageB, engine.imageVersionB != renderedImageVersionB {
+                    textureB = renderCIImageToTexture(img, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
+                    renderedImageVersionB = engine.imageVersionB
+                }
+            case .none:
+                renderedImageVersionB = -1
             }
 
             // Build uniforms
@@ -390,9 +413,51 @@ extension MetalComparisonView {
         ) -> MTLTexture? {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
+            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+            return renderCIImage(ciImage,
+                                 targetWidth: width, targetHeight: height,
+                                 existingTexture: existingTexture,
+                                 sizeMemo: &sizeMemo,
+                                 commandBuffer: commandBuffer)
+        }
+
+        // MARK: - CIImage (still image) → Texture
+        // Uses the image's natural extent, clamped to Metal's max texture size.
+
+        private func renderCIImageToTexture(
+            _ image: CIImage,
+            existingTexture: MTLTexture?,
+            sizeMemo: inout CGSize,
+            commandBuffer: MTLCommandBuffer
+        ) -> MTLTexture? {
+            let maxDim = 16384
+            var w = max(1, Int(image.extent.width))
+            var h = max(1, Int(image.extent.height))
+            if w > maxDim || h > maxDim {
+                let scale = Double(maxDim) / Double(max(w, h))
+                w = Int(Double(w) * scale)
+                h = Int(Double(h) * scale)
+            }
+            return renderCIImage(image,
+                                 targetWidth: w, targetHeight: h,
+                                 existingTexture: existingTexture,
+                                 sizeMemo: &sizeMemo,
+                                 commandBuffer: commandBuffer)
+        }
+
+        // Shared upload path. Allocates / reuses an rgba16Float texture and
+        // renders the image into it via CIContext, with extendedSRGB output so
+        // both SDR and HDR content (HDR HEIC, EXR, HDR video) flow through.
+        private func renderCIImage(
+            _ ciImage: CIImage,
+            targetWidth width: Int,
+            targetHeight height: Int,
+            existingTexture: MTLTexture?,
+            sizeMemo: inout CGSize,
+            commandBuffer: MTLCommandBuffer
+        ) -> MTLTexture? {
             let newSize = CGSize(width: width, height: height)
 
-            // Create or resize texture if needed
             var texture = existingTexture
             if texture == nil || sizeMemo != newSize {
                 let desc = MTLTextureDescriptor.texture2DDescriptor(
@@ -408,20 +473,24 @@ extension MetalComparisonView {
 
             guard let tex = texture else { return nil }
 
-            // CIImage from pixel buffer (inherits source color space from CVPixelBuffer metadata)
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let targetColorSpace = CGColorSpace(name: CGColorSpace.extendedSRGB)!
-
-            // Scale CIImage to texture size if they differ (shouldn't normally happen)
             var image = ciImage
-            if Int(ciImage.extent.width) != width || Int(ciImage.extent.height) != height {
-                let sx = CGFloat(width) / ciImage.extent.width
-                let sy = CGFloat(height) / ciImage.extent.height
-                image = ciImage.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+            // Translate so the image's extent origin lands at (0,0) — files
+            // and pixel buffers can have non-zero origins after orientation fixes.
+            if image.extent.origin != .zero {
+                image = image.transformed(by: CGAffineTransform(translationX: -image.extent.origin.x,
+                                                                y: -image.extent.origin.y))
+            }
+            // Scale to texture size if needed (typically only when we clamped).
+            if Int(image.extent.width) != width || Int(image.extent.height) != height {
+                let sx = CGFloat(width) / max(image.extent.width, 1)
+                let sy = CGFloat(height) / max(image.extent.height, 1)
+                image = image.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
             }
 
+            let targetColorSpace = CGColorSpace(name: CGColorSpace.extendedSRGB)!
             let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            ciContext.render(image, to: tex, commandBuffer: commandBuffer, bounds: bounds, colorSpace: targetColorSpace)
+            ciContext.render(image, to: tex, commandBuffer: commandBuffer,
+                             bounds: bounds, colorSpace: targetColorSpace)
 
             return tex
         }

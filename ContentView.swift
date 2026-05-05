@@ -52,12 +52,12 @@ struct ContentView: View {
             ZStack {
                 MetalComparisonView(engine: engine)
 
-                // Video name overlays
+                // Media name overlays
                 VStack {
                     HStack(alignment: .top) {
                         if let name = engine.videoNameA {
                             videoLabel(name, color: .blue) {
-                                engine.unloadVideo(side: .a)
+                                engine.unloadMedia(side: .a)
                             }
                             .padding(.leading, 12)
                             .padding(.top, 10)
@@ -65,7 +65,7 @@ struct ContentView: View {
                         Spacer()
                         if let name = engine.videoNameB {
                             videoLabel(name, color: .orange) {
-                                engine.unloadVideo(side: .b)
+                                engine.unloadMedia(side: .b)
                             }
                             .padding(.trailing, 12)
                             .padding(.top, 10)
@@ -170,15 +170,15 @@ struct ContentView: View {
             Image(systemName: "film.stack")
                 .font(.system(size: 48, weight: .thin))
                 .foregroundStyle(.secondary)
-            Text("Open or drag-and-drop two videos to compare")
+            Text("Open or drag-and-drop two videos or images to compare")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("Drop on left side for Video A, right side for Video B")
+            Text("Drop on the left half for A, the right half for B  ·  HDR EXR / HDR HEIC supported")
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
-                Button("Open Video A") { openFile(for: .a) }
-                Button("Open Video B") { openFile(for: .b) }
+                Button("Open A") { openFile(for: .a) }
+                Button("Open B") { openFile(for: .b) }
             }
             .buttonStyle(.bordered)
         }
@@ -245,6 +245,12 @@ struct ContentView: View {
                             ("Zoom in", "Auto-shows when pixels are large enough"),
                         ])
 
+                        shortcutSection("Loading Media", shortcuts: [
+                            ("Drop / Open", "Videos: mov, mp4, mkv, webm, avi, …"),
+                            ("Drop / Open", "Images: png, jpg, webp, heic, exr, hdr, raw, …"),
+                            ("Mix", "Compare a video against a still image"),
+                        ])
+
                         shortcutSection("General", shortcuts: [
                             ("?", "Show / hide this help"),
                             ("Esc", "Close help"),
@@ -291,30 +297,32 @@ struct ContentView: View {
 
     var controlsBar: some View {
         VStack(spacing: 0) {
-            // Timeline
-            HStack(spacing: 10) {
-                Text(engine.currentTimeString)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 80, alignment: .trailing)
+            // Timeline (only when at least one side is a video)
+            if engine.hasPlayableVideo {
+                HStack(spacing: 10) {
+                    Text(engine.currentTimeString)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .trailing)
 
-                Slider(
-                    value: Binding(
-                        get: { engine.seekPosition },
-                        set: { engine.seekToPosition($0) }
-                    ),
-                    in: 0...1
-                )
-                .controlSize(.small)
+                    Slider(
+                        value: Binding(
+                            get: { engine.seekPosition },
+                            set: { engine.seekToPosition($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .controlSize(.small)
 
-                Text(engine.durationString)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 80, alignment: .leading)
+                    Text(engine.durationString)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
 
             // Transport + controls
             HStack(spacing: 6) {
@@ -323,46 +331,49 @@ struct ContentView: View {
 
                 Spacer().frame(width: 4)
 
-                Group {
-                    iconButton("backward.end.fill") { engine.seekToStart() }
-                    iconButton("backward.frame.fill") { engine.stepBackward() }
-                    iconButton(engine.isPlaying ? "pause.fill" : "play.fill", size: 16) {
-                        engine.togglePlayPause()
+                if engine.hasPlayableVideo {
+                    Group {
+                        iconButton("backward.end.fill") { engine.seekToStart() }
+                        iconButton("backward.frame.fill") { engine.stepBackward() }
+                        iconButton(engine.isPlaying ? "pause.fill" : "play.fill", size: 16) {
+                            engine.togglePlayPause()
+                        }
+                        iconButton("forward.frame.fill") { engine.stepForward() }
+                        iconButton("forward.end.fill") { engine.seekToEnd() }
                     }
-                    iconButton("forward.frame.fill") { engine.stepForward() }
-                    iconButton("forward.end.fill") { engine.seekToEnd() }
-                }
 
-                Spacer().frame(width: 4)
+                    Spacer().frame(width: 4)
+                }
 
                 errorControls
 
                 Spacer()
 
-                // Frame info
-                HStack(spacing: 4) {
-                    Text("Frame")
-                        .foregroundStyle(.tertiary)
-                    Text("\(engine.currentFrame)")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-
-                TextField("Go to", text: $frameInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(width: 55)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-                    .onSubmit {
-                        if let frame = Int(frameInput) {
-                            engine.seekToFrame(frame)
-                            frameInput = ""
-                        }
+                if engine.hasPlayableVideo {
+                    HStack(spacing: 4) {
+                        Text("Frame")
+                            .foregroundStyle(.tertiary)
+                        Text("\(engine.currentFrame)")
+                            .foregroundStyle(.secondary)
                     }
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
 
-                Spacer().frame(width: 4)
+                    TextField("Go to", text: $frameInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 55)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                        .onSubmit {
+                            if let frame = Int(frameInput) {
+                                engine.seekToFrame(frame)
+                                frameInput = ""
+                            }
+                        }
+
+                    Spacer().frame(width: 4)
+                }
 
                 // Zoom
                 HStack(spacing: 4) {
@@ -495,21 +506,23 @@ struct ContentView: View {
 
     func openFile(for side: VideoSide) {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = videoContentTypes()
+        panel.allowedContentTypes = mediaContentTypes()
         panel.allowsMultipleSelection = false
-        panel.message = "Select video \(side == .a ? "A (left)" : "B (right)")"
+        panel.message = "Select video or image for \(side == .a ? "A (left)" : "B (right)")"
         panel.treatsFilePackagesAsDirectories = false
         if panel.runModal() == .OK, let url = panel.url {
-            engine.loadVideo(url: url, side: side)
+            engine.loadMedia(url: url, side: side)
         }
     }
 
-    func videoContentTypes() -> [UTType] {
-        var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie, .mpeg2Video]
-        let extensions = ["mkv", "webm", "avi", "ts", "m2ts", "mts", "flv", "wmv", "vob", "y4m"]
-        for ext in extensions {
-            if let type = UTType(filenameExtension: ext) {
-                types.append(type)
+    func mediaContentTypes() -> [UTType] {
+        var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie, .mpeg2Video, .image]
+        // Resolve any extra extensions the system knows by file extension (covers
+        // image formats like webp / exr / hdr / raw and exotic video containers).
+        let extras = MediaType.videoExtensions.union(MediaType.imageExtensions)
+        for ext in extras {
+            if let t = UTType(filenameExtension: ext) {
+                types.append(t)
             }
         }
         return types

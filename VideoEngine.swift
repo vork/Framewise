@@ -1,10 +1,33 @@
 import AVFoundation
 import Combine
 import CoreImage
+import ImageIO
 import Metal
 import QuartzCore
 
 enum VideoSide { case a, b }
+enum MediaKind: Int { case video = 0, image = 1 }
+
+enum MediaType {
+    static let imageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp", "heic", "heif",
+        "webp", "exr", "hdr", "dng", "cr2", "cr3", "nef", "arw", "raf",
+        "orf", "pef", "rw2", "srw", "ico", "icns"
+    ]
+    static let videoExtensions: Set<String> = [
+        "mov", "mp4", "m4v", "mkv", "webm", "avi", "ts", "m2ts",
+        "mts", "flv", "wmv", "vob", "y4m", "mpg", "mpeg"
+    ]
+    static func isImage(_ url: URL) -> Bool {
+        imageExtensions.contains(url.pathExtension.lowercased())
+    }
+    static func isVideo(_ url: URL) -> Bool {
+        videoExtensions.contains(url.pathExtension.lowercased())
+    }
+    static func isSupported(_ url: URL) -> Bool {
+        isImage(url) || isVideo(url)
+    }
+}
 
 enum DisplayMode: Int, CaseIterable {
     case split = 0
@@ -27,11 +50,19 @@ enum TonemapMode: Int, CaseIterable {
 
 @MainActor
 final class VideoEngine: ObservableObject {
-    // MARK: - Players
+    // MARK: - Players (videos)
     private(set) var playerA: AVPlayer?
     private(set) var playerB: AVPlayer?
     private(set) var videoOutputA: AVPlayerItemVideoOutput?
     private(set) var videoOutputB: AVPlayerItemVideoOutput?
+
+    // MARK: - Images
+    // For image-mode media, the source CIImage is held here; the renderer
+    // re-uploads to the comparison texture whenever `imageVersion*` changes.
+    private(set) var imageA: CIImage?
+    private(set) var imageB: CIImage?
+    @Published private(set) var imageVersionA: Int = 0
+    @Published private(set) var imageVersionB: Int = 0
 
     // MARK: - Published State
     @Published var isPlaying = false
@@ -46,6 +77,13 @@ final class VideoEngine: ObservableObject {
     @Published var hasVideoB = false
     @Published var videoNameA: String?
     @Published var videoNameB: String?
+    @Published var mediaKindA: MediaKind?
+    @Published var mediaKindB: MediaKind?
+
+    /// True when at least one side holds something the transport can drive.
+    var hasPlayableVideo: Bool {
+        mediaKindA == .video || mediaKindB == .video
+    }
 
     // Error visualization (persisted)
     @Published var displayMode: DisplayMode = .split {
@@ -95,34 +133,39 @@ final class VideoEngine: ObservableObject {
         return 16.0 / 9.0
     }
 
-    // MARK: - Load Video
+    // MARK: - Load / Unload
 
-    func unloadVideo(side: VideoSide) {
+    /// Dispatch loader: picks video or image path based on extension.
+    /// Unsupported files are silently ignored (callers gate via `MediaType.isSupported`).
+    func loadMedia(url: URL, side: VideoSide) {
+        if MediaType.isImage(url) {
+            loadImage(url: url, side: side)
+        } else {
+            loadVideo(url: url, side: side)
+        }
+    }
+
+    func unloadMedia(side: VideoSide) {
         switch side {
         case .a:
             playerA?.pause()
             playerA = nil
             videoOutputA = nil
+            imageA = nil
             hasVideoA = false
             videoNameA = nil
+            mediaKindA = nil
         case .b:
             playerB?.pause()
             playerB = nil
             videoOutputB = nil
+            imageB = nil
             hasVideoB = false
             videoNameB = nil
+            mediaKindB = nil
         }
-        // Recalculate duration from remaining video
-        if hasVideoA || hasVideoB {
-            let d = playerA?.currentItem?.duration ?? playerB?.currentItem?.duration ?? .zero
-            duration = (d.isValid && !d.isIndefinite) ? d.seconds : 0
-        } else {
-            duration = 0
-            currentTime = 0
-            currentFrame = 0
-            seekPosition = 0
-        }
-        // Fall back to split if only one video remains
+        recalculateDuration()
+        // Fall back to split if both sides aren't loaded
         if !(hasVideoA && hasVideoB) {
             displayMode = .split
         }
@@ -148,14 +191,18 @@ final class VideoEngine: ObservableObject {
             playerA?.pause()
             playerA = player
             videoOutputA = output
+            imageA = nil
             hasVideoA = true
             videoNameA = url.lastPathComponent
+            mediaKindA = .video
         case .b:
             playerB?.pause()
             playerB = player
             videoOutputB = output
+            imageB = nil
             hasVideoB = true
             videoNameB = url.lastPathComponent
+            mediaKindB = .video
         }
 
         // Load track info asynchronously
@@ -200,6 +247,69 @@ final class VideoEngine: ObservableObject {
         }
     }
 
+    /// Load a still image (jpg/png/webp/heic/exr/hdr/raw/etc.) onto the given side.
+    /// Uses CIImage so HDR (EXR / HDR HEIC) and wide-gamut sources are preserved.
+    func loadImage(url: URL, side: VideoSide) {
+        // `expandToHDR` enables HDR gain-map decoding (HDR HEIC) on macOS 14+;
+        // it's harmless for SDR images. EXR/HDR linear values flow through naturally.
+        let opts: [CIImageOption: Any] = [.expandToHDR: true]
+        guard let raw = CIImage(contentsOf: url, options: opts)
+            ?? CIImage(contentsOf: url) else { return }
+
+        // Apply EXIF orientation so camera-rotated JPEGs display upright.
+        let exif = (raw.properties[kCGImagePropertyOrientation as String] as? Int32) ?? 1
+        let image = raw.oriented(forExifOrientation: exif)
+
+        let size = CGSize(width: image.extent.width, height: image.extent.height)
+        guard size.width > 0, size.height > 0 else { return }
+
+        switch side {
+        case .a:
+            playerA?.pause()
+            playerA = nil
+            videoOutputA = nil
+            imageA = image
+            imageVersionA &+= 1
+            hasVideoA = true
+            videoNameA = url.lastPathComponent
+            mediaKindA = .image
+            videoSizeA = size
+            frameRateA = 1
+        case .b:
+            playerB?.pause()
+            playerB = nil
+            videoOutputB = nil
+            imageB = image
+            imageVersionB &+= 1
+            hasVideoB = true
+            videoNameB = url.lastPathComponent
+            mediaKindB = .image
+            videoSizeB = size
+            frameRateB = 1
+        }
+
+        recalculateDuration()
+        setupTimeObserver()
+    }
+
+    private func recalculateDuration() {
+        // Use the longest available video duration; images contribute 0.
+        var longest: Double = 0
+        if let item = playerA?.currentItem, item.duration.isValid, !item.duration.isIndefinite {
+            longest = max(longest, item.duration.seconds)
+        }
+        if let item = playerB?.currentItem, item.duration.isValid, !item.duration.isIndefinite {
+            longest = max(longest, item.duration.seconds)
+        }
+        duration = longest
+        if longest == 0 {
+            currentTime = 0
+            currentFrame = 0
+            seekPosition = 0
+            isPlaying = false
+        }
+    }
+
     // MARK: - Transport
 
     func togglePlayPause() {
@@ -207,7 +317,7 @@ final class VideoEngine: ObservableObject {
     }
 
     func play() {
-        guard hasVideoA || hasVideoB else { return }
+        guard hasPlayableVideo else { return }
         syncPlayersNow()
         playerA?.rate = 1.0
         playerB?.rate = 1.0
