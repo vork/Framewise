@@ -5,7 +5,7 @@ import ImageIO
 import Metal
 import QuartzCore
 
-enum VideoSide { case a, b }
+enum MediaSide { case a, b }
 enum MediaKind: Int { case video = 0, image = 1 }
 
 enum MediaType {
@@ -49,7 +49,7 @@ enum TonemapMode: Int, CaseIterable {
 }
 
 @MainActor
-final class VideoEngine: ObservableObject {
+final class MediaEngine: ObservableObject {
     // MARK: - Players (videos)
     private(set) var playerA: AVPlayer?
     private(set) var playerB: AVPlayer?
@@ -73,10 +73,10 @@ final class VideoEngine: ObservableObject {
     @Published var sliderPosition: Double = 0.5
     @Published var zoom: Double = 1.0
     @Published var panOffset: CGPoint = .zero
-    @Published var hasVideoA = false
-    @Published var hasVideoB = false
-    @Published var videoNameA: String?
-    @Published var videoNameB: String?
+    @Published var hasMediaA = false
+    @Published var hasMediaB = false
+    @Published var mediaNameA: String?
+    @Published var mediaNameB: String?
     @Published var mediaKindA: MediaKind?
     @Published var mediaKindB: MediaKind?
 
@@ -123,8 +123,8 @@ final class VideoEngine: ObservableObject {
 
     var frameRateA: Double = 24
     var frameRateB: Double = 24
-    var videoSizeA: CGSize = CGSize(width: 1920, height: 1080)
-    var videoSizeB: CGSize = CGSize(width: 1920, height: 1080)
+    var mediaSizeA: CGSize = CGSize(width: 1920, height: 1080)
+    var mediaSizeB: CGSize = CGSize(width: 1920, height: 1080)
 
     // MARK: - Internal
     private var timeObserver: Any?
@@ -156,16 +156,16 @@ final class VideoEngine: ObservableObject {
     var durationString: String { formatTime(duration) }
 
     var referenceAspectRatio: Double {
-        if hasVideoA { return videoSizeA.width / videoSizeA.height }
-        if hasVideoB { return videoSizeB.width / videoSizeB.height }
+        if hasMediaA { return mediaSizeA.width / mediaSizeA.height }
+        if hasMediaB { return mediaSizeB.width / mediaSizeB.height }
         return 16.0 / 9.0
     }
 
     /// The size of whichever side is the reference for the layout (A wins).
     /// Returns nil when no media is loaded.
-    var referenceVideoSize: CGSize? {
-        if hasVideoA { return videoSizeA }
-        if hasVideoB { return videoSizeB }
+    var referenceMediaSize: CGSize? {
+        if hasMediaA { return mediaSizeA }
+        if hasMediaB { return mediaSizeB }
         return nil
     }
 
@@ -174,7 +174,7 @@ final class VideoEngine: ObservableObject {
     /// readable RGB(A) values inside every visible pixel cell, so the
     /// SwiftUI hover chip can be suppressed to avoid duplicate readouts.
     func inShaderTextOverlayActive(viewSize: CGSize) -> Bool {
-        guard pixelInspect, let size = referenceVideoSize,
+        guard pixelInspect, let size = referenceMediaSize,
               size.width > 0, size.height > 0,
               viewSize.width > 0, viewSize.height > 0 else { return false }
         let fitScale = min(viewSize.width / size.width,
@@ -187,7 +187,7 @@ final class VideoEngine: ObservableObject {
 
     /// Dispatch loader: picks video or image path based on extension.
     /// Unsupported files are silently ignored (callers gate via `MediaType.isSupported`).
-    func loadMedia(url: URL, side: VideoSide) {
+    func loadMedia(url: URL, side: MediaSide) {
         if MediaType.isImage(url) {
             loadImage(url: url, side: side)
         } else {
@@ -195,7 +195,7 @@ final class VideoEngine: ObservableObject {
         }
     }
 
-    func unloadMedia(side: VideoSide) {
+    func unloadMedia(side: MediaSide) {
         switch side {
         case .a:
             playerA?.pause()
@@ -204,8 +204,8 @@ final class VideoEngine: ObservableObject {
             imageA = nil
             latestCIImageA = nil
             hoverSampleA = nil
-            hasVideoA = false
-            videoNameA = nil
+            hasMediaA = false
+            mediaNameA = nil
             mediaKindA = nil
         case .b:
             playerB?.pause()
@@ -214,19 +214,19 @@ final class VideoEngine: ObservableObject {
             imageB = nil
             latestCIImageB = nil
             hoverSampleB = nil
-            hasVideoB = false
-            videoNameB = nil
+            hasMediaB = false
+            mediaNameB = nil
             mediaKindB = nil
         }
         recalculateDuration()
         // Fall back to split if both sides aren't loaded
-        if !(hasVideoA && hasVideoB) {
+        if !(hasMediaA && hasMediaB) {
             displayMode = .split
         }
         setupTimeObserver()
     }
 
-    func loadVideo(url: URL, side: VideoSide) {
+    func loadVideo(url: URL, side: MediaSide) {
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let playerItem = AVPlayerItem(asset: asset)
 
@@ -246,16 +246,16 @@ final class VideoEngine: ObservableObject {
             playerA = player
             videoOutputA = output
             imageA = nil
-            hasVideoA = true
-            videoNameA = url.lastPathComponent
+            hasMediaA = true
+            mediaNameA = url.lastPathComponent
             mediaKindA = .video
         case .b:
             playerB?.pause()
             playerB = player
             videoOutputB = output
             imageB = nil
-            hasVideoB = true
-            videoNameB = url.lastPathComponent
+            hasMediaB = true
+            mediaNameB = url.lastPathComponent
             mediaKindB = .video
         }
 
@@ -278,10 +278,10 @@ final class VideoEngine: ObservableObject {
                     switch side {
                     case .a:
                         self.frameRateA = max(1, Double(fps))
-                        self.videoSizeA = finalSize
+                        self.mediaSizeA = finalSize
                     case .b:
                         self.frameRateB = max(1, Double(fps))
-                        self.videoSizeB = finalSize
+                        self.mediaSizeB = finalSize
                     }
 
                     self.duration = max(self.duration, dur.seconds)
@@ -291,7 +291,7 @@ final class VideoEngine: ObservableObject {
                     player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
 
                     // Sync with existing video
-                    if self.hasVideoA && self.hasVideoB {
+                    if self.hasMediaA && self.hasMediaB {
                         self.syncPlayersNow()
                     }
                 }
@@ -303,7 +303,7 @@ final class VideoEngine: ObservableObject {
 
     /// Load a still image (jpg/png/webp/heic/exr/hdr/raw/etc.) onto the given side.
     /// Uses CIImage so HDR (EXR / HDR HEIC) and wide-gamut sources are preserved.
-    func loadImage(url: URL, side: VideoSide) {
+    func loadImage(url: URL, side: MediaSide) {
         // `expandToHDR` enables HDR gain-map decoding (HDR HEIC) on macOS 14+;
         // it's harmless for SDR images. EXR/HDR linear values flow through naturally.
         let opts: [CIImageOption: Any] = [.expandToHDR: true]
@@ -325,10 +325,10 @@ final class VideoEngine: ObservableObject {
             imageA = image
             latestCIImageA = image
             imageVersionA &+= 1
-            hasVideoA = true
-            videoNameA = url.lastPathComponent
+            hasMediaA = true
+            mediaNameA = url.lastPathComponent
             mediaKindA = .image
-            videoSizeA = size
+            mediaSizeA = size
             frameRateA = 1
         case .b:
             playerB?.pause()
@@ -337,10 +337,10 @@ final class VideoEngine: ObservableObject {
             imageB = image
             latestCIImageB = image
             imageVersionB &+= 1
-            hasVideoB = true
-            videoNameB = url.lastPathComponent
+            hasMediaB = true
+            mediaNameB = url.lastPathComponent
             mediaKindB = .image
-            videoSizeB = size
+            mediaSizeB = size
             frameRateB = 1
         }
 
@@ -359,13 +359,13 @@ final class VideoEngine: ObservableObject {
         guard inside else { clearHover(); return }
 
         if let img = latestCIImageA {
-            hoverSampleA = sample(image: img, size: videoSizeA, u: viewU, v: viewV,
+            hoverSampleA = sample(image: img, size: mediaSizeA, u: viewU, v: viewV,
                                   hasAlpha: kindHasAlpha(.a))
         } else {
             hoverSampleA = nil
         }
         if let img = latestCIImageB {
-            hoverSampleB = sample(image: img, size: videoSizeB, u: viewU, v: viewV,
+            hoverSampleB = sample(image: img, size: mediaSizeB, u: viewU, v: viewV,
                                   hasAlpha: kindHasAlpha(.b))
         } else {
             hoverSampleB = nil
@@ -379,7 +379,7 @@ final class VideoEngine: ObservableObject {
 
     /// Heuristic: assume video has no meaningful alpha; trust images to tell us.
     /// (Refining further would require sniffing the source via CGImageSource.)
-    private func kindHasAlpha(_ side: VideoSide) -> Bool {
+    private func kindHasAlpha(_ side: MediaSide) -> Bool {
         switch side == .a ? mediaKindA : mediaKindB {
         case .image: return true
         default: return false
@@ -546,10 +546,10 @@ final class VideoEngine: ObservableObject {
 
     private func syncPlayersNow() {
         let time = playerA?.currentTime() ?? playerB?.currentTime() ?? .zero
-        if let pB = playerB, hasVideoA {
+        if let pB = playerB, hasMediaA {
             pB.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         }
-        if let pA = playerA, hasVideoB && !hasVideoA {
+        if let pA = playerA, hasMediaB && !hasMediaA {
             pA.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         }
     }

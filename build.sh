@@ -38,7 +38,7 @@ swiftc \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     FramewiseApp.swift \
     ShaderSource.swift \
-    VideoEngine.swift \
+    MediaEngine.swift \
     MetalComparisonView.swift \
     ContentView.swift \
     -o "$BUILD_DIR/Framewise"

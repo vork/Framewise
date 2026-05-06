@@ -10,12 +10,12 @@ struct Uniforms {
     var sliderPosition: Float = 0.5
     var zoom: Float = 1.0
     var panOffset: SIMD2<Float> = .zero
-    var videoAspect: SIMD2<Float> = SIMD2<Float>(16.0 / 9.0, 1.0)
+    var mediaAspect: SIMD2<Float> = SIMD2<Float>(16.0 / 9.0, 1.0)
     var viewAspect: SIMD2<Float> = SIMD2<Float>(16.0 / 9.0, 1.0)
-    var videoSizeA: SIMD2<Float> = SIMD2<Float>(1920, 1080)
-    var videoSizeB: SIMD2<Float> = SIMD2<Float>(1920, 1080)
-    var hasVideoA: Int32 = 0
-    var hasVideoB: Int32 = 0
+    var mediaSizeA: SIMD2<Float> = SIMD2<Float>(1920, 1080)
+    var mediaSizeB: SIMD2<Float> = SIMD2<Float>(1920, 1080)
+    var hasMediaA: Int32 = 0
+    var hasMediaB: Int32 = 0
     var showSlider: Int32 = 1
     var displayMode: Int32 = 0      // 0=split, 1=error
     var errorMetric: Int32 = 0      // 0..4
@@ -30,7 +30,7 @@ struct Uniforms {
 // MARK: - NSViewRepresentable
 
 struct MetalComparisonView: NSViewRepresentable {
-    let engine: VideoEngine
+    let engine: MediaEngine
 
     func makeCoordinator() -> Coordinator {
         Coordinator(engine: engine)
@@ -49,7 +49,7 @@ struct MetalComparisonView: NSViewRepresentable {
 // MARK: - Custom MTKView with mouse handling
 
 class ComparisonMTKView: MTKView {
-    weak var engine: VideoEngine?
+    weak var engine: MediaEngine?
     weak var coordinator: MetalComparisonView.Coordinator?
 
     private var isDraggingSlider = false
@@ -62,7 +62,7 @@ class ComparisonMTKView: MTKView {
     private var isOpenHandCursor = false
 
     // Drag-and-drop state
-    var dropSide: VideoSide? = nil  // which side is highlighted during drag
+    var dropSide: MediaSide? = nil  // which side is highlighted during drag
 
     /// Last hover texCoord (post aspect/zoom/pan), in [0,1]² when the cursor
     /// is over the image and `nil` otherwise. Read by the renderer to refresh
@@ -137,7 +137,7 @@ class ComparisonMTKView: MTKView {
         return MediaType.isSupported(url) ? url : nil
     }
 
-    private func sideForDrag(_ info: NSDraggingInfo) -> VideoSide {
+    private func sideForDrag(_ info: NSDraggingInfo) -> MediaSide {
         let loc = convert(info.draggingLocation, from: nil)
         return loc.x < bounds.width / 2 ? .a : .b
     }
@@ -174,7 +174,7 @@ class ComparisonMTKView: MTKView {
         let normX = loc.x / bounds.width
         let sliderX = engine.sliderPosition
 
-        if engine.hasVideoA && engine.hasVideoB && engine.displayMode == .split && abs(normX - sliderX) < 0.025 {
+        if engine.hasMediaA && engine.hasMediaB && engine.displayMode == .split && abs(normX - sliderX) < 0.025 {
             isDraggingSlider = true
             NSCursor.resizeLeftRight.set()
         } else {
@@ -252,7 +252,7 @@ class ComparisonMTKView: MTKView {
     }
 
     private func updateCursorForPosition(_ loc: CGPoint) {
-        guard let engine, engine.hasVideoA && engine.hasVideoB else {
+        guard let engine, engine.hasMediaA && engine.hasMediaB else {
             NSCursor.arrow.set()
             return
         }
@@ -275,7 +275,7 @@ class ComparisonMTKView: MTKView {
 extension MetalComparisonView {
     @MainActor
     class Coordinator: NSObject, MTKViewDelegate {
-        let engine: VideoEngine
+        let engine: MediaEngine
         var device: MTLDevice!
         var commandQueue: MTLCommandQueue!
         var pipelineState: MTLRenderPipelineState!
@@ -295,7 +295,7 @@ extension MetalComparisonView {
         // Placeholder 1x1 black texture for when no video is loaded
         var placeholderTexture: MTLTexture!
 
-        init(engine: VideoEngine) {
+        init(engine: MediaEngine) {
             self.engine = engine
             super.init()
         }
@@ -442,15 +442,15 @@ extension MetalComparisonView {
                 sliderPosition: Float(engine.sliderPosition),
                 zoom: Float(engine.zoom),
                 panOffset: SIMD2<Float>(Float(engine.panOffset.x), Float(engine.panOffset.y)),
-                videoAspect: SIMD2<Float>(Float(ar), 1.0),
+                mediaAspect: SIMD2<Float>(Float(ar), 1.0),
                 viewAspect: SIMD2<Float>(Float(drawableSize.width / drawableSize.height), 1.0),
-                videoSizeA: SIMD2<Float>(Float(max(1, engine.videoSizeA.width)),
-                                         Float(max(1, engine.videoSizeA.height))),
-                videoSizeB: SIMD2<Float>(Float(max(1, engine.videoSizeB.width)),
-                                         Float(max(1, engine.videoSizeB.height))),
-                hasVideoA: engine.hasVideoA ? 1 : 0,
-                hasVideoB: engine.hasVideoB ? 1 : 0,
-                showSlider: (engine.displayMode == .split && engine.hasVideoA && engine.hasVideoB) ? 1 : 0,
+                mediaSizeA: SIMD2<Float>(Float(max(1, engine.mediaSizeA.width)),
+                                         Float(max(1, engine.mediaSizeA.height))),
+                mediaSizeB: SIMD2<Float>(Float(max(1, engine.mediaSizeB.width)),
+                                         Float(max(1, engine.mediaSizeB.height))),
+                hasMediaA: engine.hasMediaA ? 1 : 0,
+                hasMediaB: engine.hasMediaB ? 1 : 0,
+                showSlider: (engine.displayMode == .split && engine.hasMediaA && engine.hasMediaB) ? 1 : 0,
                 displayMode: Int32(engine.displayMode.rawValue),
                 errorMetric: Int32(engine.errorMetric.rawValue),
                 tonemapMode: Int32(engine.tonemapMode.rawValue),

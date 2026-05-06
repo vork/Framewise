@@ -39,7 +39,7 @@ jobs:
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
             FramewiseApp.swift \
             ShaderSource.swift \
-            VideoEngine.swift \
+            MediaEngine.swift \
             MetalComparisonView.swift \
             ContentView.swift \
             -o .build/Framewise-arm64
@@ -64,7 +64,7 @@ jobs:
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
             FramewiseApp.swift \
             ShaderSource.swift \
-            VideoEngine.swift \
+            MediaEngine.swift \
             MetalComparisonView.swift \
             ContentView.swift \
             -o .build/Framewise-x86_64

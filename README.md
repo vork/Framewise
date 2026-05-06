@@ -130,7 +130,7 @@ git push origin v1.0.0
 |------|---------|
 | `FramewiseApp.swift` | App entry point |
 | `ContentView.swift` | SwiftUI UI layout, controls, and help overlay |
-| `VideoEngine.swift` | Dual AVPlayer management, synchronization, and persisted state |
+| `MediaEngine.swift` | Per-side media state (videos via AVPlayer, images via CIImage), playback synchronization, hover-sample readback, persisted settings |
 | `MetalComparisonView.swift` | Metal rendering pipeline, CIImage color management, drag-and-drop |
 | `ShaderSource.swift` | Metal shaders — split view, error metrics, tonemapping, drop highlight |
 

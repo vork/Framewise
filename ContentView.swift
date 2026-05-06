@@ -43,7 +43,7 @@ extension TonemapMode {
 // MARK: - Content View
 
 struct ContentView: View {
-    @StateObject private var engine = VideoEngine()
+    @StateObject private var engine = MediaEngine()
     @State private var frameInput: String = ""
     @State private var showHelp = false
 
@@ -55,16 +55,16 @@ struct ContentView: View {
                 // Media name overlays
                 VStack {
                     HStack(alignment: .top) {
-                        if let name = engine.videoNameA {
-                            videoLabel(name, color: .blue) {
+                        if let name = engine.mediaNameA {
+                            mediaLabel(name, color: .blue) {
                                 engine.unloadMedia(side: .a)
                             }
                             .padding(.leading, 12)
                             .padding(.top, 10)
                         }
                         Spacer()
-                        if let name = engine.videoNameB {
-                            videoLabel(name, color: .orange) {
+                        if let name = engine.mediaNameB {
+                            mediaLabel(name, color: .orange) {
                                 engine.unloadMedia(side: .b)
                             }
                             .padding(.trailing, 12)
@@ -75,7 +75,7 @@ struct ContentView: View {
                 }
 
                 // Empty state
-                if !engine.hasVideoA && !engine.hasVideoB {
+                if !engine.hasMediaA && !engine.hasMediaB {
                     emptyStateView
                 }
 
@@ -118,7 +118,7 @@ struct ContentView: View {
         .onKeyPress(.home) { engine.seekToStart(); return .handled }
         .onKeyPress(.end) { engine.seekToEnd(); return .handled }
         // ── Zoom ─────────────────────────────────────────────
-        .onKeyPress(.upArrow) { engine.zoom = min(VideoEngine.maxZoom, engine.zoom * 1.25); return .handled }
+        .onKeyPress(.upArrow) { engine.zoom = min(MediaEngine.maxZoom, engine.zoom * 1.25); return .handled }
         .onKeyPress(.downArrow) { engine.zoom = max(0.1, engine.zoom / 1.25); return .handled }
         .onKeyPress("r") { engine.resetView(); return .handled }
         .onKeyPress("1") { engine.zoom = 1.0; return .handled }
@@ -127,7 +127,7 @@ struct ContentView: View {
         .onKeyPress("8") { engine.zoom = 8.0; return .handled }
         // ── Display mode ─────────────────────────────────────
         .onKeyPress("e") {
-            if engine.hasVideoA && engine.hasVideoB {
+            if engine.hasMediaA && engine.hasMediaB {
                 engine.displayMode = engine.displayMode == .split ? .error : .split
             }
             return .handled
@@ -160,9 +160,9 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Video Label
+    // MARK: - Media Label
 
-    func videoLabel(_ name: String, color: Color, onClose: @escaping () -> Void) -> some View {
+    func mediaLabel(_ name: String, color: Color, onClose: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(name).lineLimit(1).truncationMode(.middle)
@@ -219,7 +219,7 @@ struct ContentView: View {
         )
     }
 
-    private func sampleChip(label: String, color: Color, sample: VideoEngine.PixelSample) -> some View {
+    private func sampleChip(label: String, color: Color, sample: MediaEngine.PixelSample) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label)
@@ -251,7 +251,7 @@ struct ContentView: View {
         return String(format: "%+6.3f", v)
     }
 
-    private func deltaChip(a: VideoEngine.PixelSample, b: VideoEngine.PixelSample) -> some View {
+    private func deltaChip(a: MediaEngine.PixelSample, b: MediaEngine.PixelSample) -> some View {
         let d = a.rgba - b.rgba
         return HStack(spacing: 6) {
             Text("\u{0394}")
@@ -507,7 +507,7 @@ struct ContentView: View {
     @ViewBuilder
     var errorControls: some View {
         // Mode toggle: require both videos
-        if engine.hasVideoA && engine.hasVideoB {
+        if engine.hasMediaA && engine.hasMediaB {
             Picker("", selection: $engine.displayMode) {
                 ForEach(DisplayMode.allCases, id: \.self) { mode in
                     Label(mode.label, systemImage: mode.icon).tag(mode)
@@ -532,7 +532,7 @@ struct ContentView: View {
         }
 
         // Visualization mode: available with any video loaded
-        if engine.hasVideoA || engine.hasVideoB {
+        if engine.hasMediaA || engine.hasMediaB {
             Picker("Vis", selection: $engine.tonemapMode) {
                 ForEach(TonemapMode.allCases, id: \.self) { m in
                     Text(m.label).tag(m)
@@ -543,7 +543,7 @@ struct ContentView: View {
         }
 
         // Exposure & gamma: available with any video loaded
-        if engine.hasVideoA || engine.hasVideoB {
+        if engine.hasMediaA || engine.hasMediaB {
             Divider().frame(height: 16)
 
             HStack(spacing: 3) {
@@ -605,7 +605,7 @@ struct ContentView: View {
 
     // MARK: - File Open
 
-    func openFile(for side: VideoSide) {
+    func openFile(for side: MediaSide) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = mediaContentTypes()
         panel.allowsMultipleSelection = false

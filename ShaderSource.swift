@@ -14,12 +14,12 @@ struct Uniforms {
     float sliderPosition;
     float zoom;
     float2 panOffset;
-    float2 videoAspect;
+    float2 mediaAspect;
     float2 viewAspect;
-    float2 videoSizeA;
-    float2 videoSizeB;
-    int hasVideoA;
-    int hasVideoB;
+    float2 mediaSizeA;
+    float2 mediaSizeB;
+    int hasMediaA;
+    int hasMediaB;
     int showSlider;
     int displayMode;    // 0=split, 1=error
     int errorMetric;    // 0=error, 1=abs, 2=squared, 3=relAbs, 4=relSquared
@@ -265,7 +265,7 @@ vertex VertexOut vertexMain(uint vid [[vertex_id]],
 
     // Aspect ratio fitting
     float viewAR = u.viewAspect.x;
-    float videoAR = u.videoAspect.x;
+    float videoAR = u.mediaAspect.x;
 
     if (viewAR > videoAR) {
         float scale = videoAR / viewAR;
@@ -300,9 +300,9 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
 
     // ── Pixel-on-screen size (for grid + value overlay) ──────────
     // Use the active video's resolution so the grid aligns with real pixels.
-    float2 sizeA = max(u.videoSizeA, float2(1.0));
-    float2 sizeB = max(u.videoSizeB, float2(1.0));
-    float2 refSize = (u.hasVideoA != 0) ? sizeA : sizeB;
+    float2 sizeA = max(u.mediaSizeA, float2(1.0));
+    float2 sizeB = max(u.mediaSizeB, float2(1.0));
+    float2 refSize = (u.hasMediaA != 0) ? sizeA : sizeB;
 
     // Screen pixels per video pixel along each axis. Derivatives must be
     // evaluated in uniform control flow, so compute once up front.
@@ -327,7 +327,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     float4 outColor;
     float4 valuesToShow = float4(0.0, 0.0, 0.0, 1.0);
     bool valuesValid = false;
-    bool isErrorMode = (u.displayMode == 1 && u.hasVideoA != 0 && u.hasVideoB != 0);
+    bool isErrorMode = (u.displayMode == 1 && u.hasMediaA != 0 && u.hasMediaB != 0);
     bool fragmentOnSideA = false;   // true if split-mode pixel reads from A
 
     if (isErrorMode) {
@@ -343,17 +343,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         float normX = in.position.x / u.viewportSize.x;
         float4 color;
 
-        if (normX < u.sliderPosition && u.hasVideoA != 0) {
+        if (normX < u.sliderPosition && u.hasMediaA != 0) {
             color = texA.sample(sLinear, tcA);
             valuesToShow = color;
             valuesValid = true;
             fragmentOnSideA = true;
-        } else if (u.hasVideoB != 0) {
+        } else if (u.hasMediaB != 0) {
             color = texB.sample(sLinear, tcB);
             valuesToShow = color;
             valuesValid = true;
             fragmentOnSideA = false;
-        } else if (u.hasVideoA != 0) {
+        } else if (u.hasMediaA != 0) {
             color = texA.sample(sLinear, tcA);
             valuesToShow = color;
             valuesValid = true;
@@ -374,7 +374,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         // Use the size matching the video the fragment is sampling from.
         float2 gridSize = isErrorMode
             ? sizeA
-            : (fragmentOnSideA ? sizeA : (u.hasVideoB != 0 ? sizeB : sizeA));
+            : (fragmentOnSideA ? sizeA : (u.hasMediaB != 0 ? sizeB : sizeA));
         float2 cellPos = fract(tc * gridSize);
         // Distance from nearest cell edge, converted to screen pixels.
         // cellPos is in cell-UV space (one cell = [0,1]); one cell spans
@@ -397,7 +397,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     if (showText && valuesValid) {
         float2 textSize = isErrorMode
             ? sizeA
-            : (fragmentOnSideA ? sizeA : (u.hasVideoB != 0 ? sizeB : sizeA));
+            : (fragmentOnSideA ? sizeA : (u.hasMediaB != 0 ? sizeB : sizeA));
         float2 cellPos = fract(tc * textSize);
         // Contrast color picked from base output: dark text on bright cells,
         // bright text on dark cells. Channel-tinted so R/G/B(/A) lines are
@@ -421,7 +421,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     }
 
     // ── Comparison slider (split mode only) ──────────────────────
-    if (u.showSlider != 0 && (u.hasVideoA != 0 || u.hasVideoB != 0)) {
+    if (u.showSlider != 0 && (u.hasMediaA != 0 || u.hasMediaB != 0)) {
         float sliderPx = u.sliderPosition * u.viewportSize.x;
         float dx = abs(in.position.x - sliderPx);
 
