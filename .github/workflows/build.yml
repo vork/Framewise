@@ -231,26 +231,40 @@ jobs:
           sha256sum *.zip | tee checksums.sha256
           ls -la
 
+      - name: Compose release notes
+        run: |
+          BODY=release-body.md
+          # Pull the changelog entries for this tag, or fall back to a stub.
+          if .cursor/skills/release/scripts/extract-changelog.sh "${GITHUB_REF_NAME}" > release-changelog.md; then
+            cat release-changelog.md > "$BODY"
+          else
+            echo "_No CHANGELOG.md entry for ${GITHUB_REF_NAME}._" > "$BODY"
+          fi
+          {
+            echo
+            echo "## Downloads"
+            echo
+            echo "| Platform | File |"
+            echo "|----------|------|"
+            echo "| macOS (Universal — Apple Silicon + Intel) | \`Framewise-macos-universal.zip\` |"
+            echo
+            echo "### Installation"
+            echo "1. Download the \`.zip\` file"
+            echo "2. Extract and move **Framewise.app** to \`/Applications\`"
+            echo "3. Double-click to launch"
+            echo
+            echo "### Verification"
+            echo '```'
+            echo "sha256sum -c checksums.sha256"
+            echo '```'
+          } >> "$BODY"
+          echo "── release body ──"
+          cat "$BODY"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          body: |
-            ## Downloads
-
-            | Platform | File |
-            |----------|------|
-            | macOS (Universal — Apple Silicon + Intel) | `Framewise-macos-universal.zip` |
-
-            ### Installation
-            1. Download the `.zip` file
-            2. Extract and move **Framewise.app** to `/Applications`
-            3. Double-click to launch
-
-            ### Verification
-            ```
-            sha256sum -c checksums.sha256
-            ```
+          body_path: release-body.md
           files: |
             release-assets/Framewise-macos-universal.zip
             release-assets/checksums.sha256
