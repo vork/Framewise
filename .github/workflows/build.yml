@@ -17,6 +17,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags so `git describe` works
 
       # ── Build arm64 ──────────────────────────────────────────────
       - name: Build (arm64)
@@ -105,6 +107,9 @@ jobs:
           mkdir -p "$BUNDLE/Contents/Resources"
           cp .build/Framewise "$BUNDLE/Contents/MacOS/"
           cp Info.plist "$BUNDLE/Contents/"
+          # Stamp version from the git tag (release builds) or the latest tag
+          # plus commit count (workflow_dispatch / push-to-branch builds).
+          ./scripts/apply-version.sh "$BUNDLE"
           [ -f .build/AppIcon.icns ] && cp .build/AppIcon.icns "$BUNDLE/Contents/Resources/"
           echo "App bundle created: $BUNDLE"
 
@@ -210,6 +215,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:

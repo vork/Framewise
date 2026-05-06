@@ -117,9 +117,26 @@ The included workflow (`.github/workflows/build.yml`) builds a **universal binar
 
 Without these secrets, the workflow still builds and produces an ad-hoc signed artifact.
 
+### Versioning
+
+`CFBundleShortVersionString` and `CFBundleVersion` are stamped at build time by `scripts/apply-version.sh` (called from both `build.sh` and the GitHub Actions workflow):
+
+| Plist key | Source |
+|-----------|--------|
+| `CFBundleShortVersionString` | Latest `v*` git tag with the leading `v` stripped, falling back to `0.0.0` on a tag-less repo. |
+| `CFBundleVersion` | `git rev-list --count HEAD` — a monotonic build number. Falls back to `1`. |
+
+Either can be overridden by exporting `MARKETING_VERSION` / `BUILD_VERSION` before invoking the build:
+
+```bash
+MARKETING_VERSION=2.5.0 BUILD_VERSION=99 ./build.sh
+```
+
+The source `Info.plist` keeps placeholder values (`1.0` / `1`); the stamping touches only the copy inside the built `.app`, so `git status` stays clean.
+
 ### Creating a release
 
-Push a version tag to trigger the full build + release pipeline:
+Push a version tag to trigger the full build + release pipeline. The bundled version automatically picks up the tag.
 
 ```bash
 git tag v1.0.0

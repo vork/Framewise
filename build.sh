@@ -79,6 +79,10 @@ mkdir -p "$BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/Framewise" "$BUNDLE/Contents/MacOS/"
 cp Info.plist "$BUNDLE/Contents/"
 
+# Stamp CFBundleShortVersionString / CFBundleVersion from the latest git tag.
+# Override at any time by exporting MARKETING_VERSION / BUILD_VERSION.
+./scripts/apply-version.sh "$BUNDLE"
+
 if [ -f "$BUILD_DIR/AppIcon.icns" ]; then
     cp "$BUILD_DIR/AppIcon.icns" "$BUNDLE/Contents/Resources/"
 fi
