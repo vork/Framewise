@@ -150,6 +150,11 @@ final class MediaEngine: ObservableObject {
 
     // MARK: - Internal
     private var timeObserver: Any?
+    // Track which player the time observer was registered on. Without this,
+    // removing the observer from `(playerA ?? playerB)` after one side is
+    // unloaded picks the wrong player and AVPlayer fatal-errors (or worse,
+    // dereferences a dangling token from the deallocated original owner).
+    private weak var timeObserverOwner: AVPlayer?
     private var cancellables = Set<AnyCancellable>()
     var isScrubbing = false
 
@@ -603,13 +608,19 @@ final class MediaEngine: ObservableObject {
 
     private func setupTimeObserver() {
         if let old = timeObserver {
-            (playerA ?? playerB)?.removeTimeObserver(old)
+            // Only remove from the player the observer was actually attached
+            // to. The owner may already be nil (deallocated when its side was
+            // unloaded), in which case AVPlayer has cleaned up the observer
+            // for us and there is nothing to remove.
+            timeObserverOwner?.removeTimeObserver(old)
             timeObserver = nil
+            timeObserverOwner = nil
         }
 
         guard let player = playerA ?? playerB else { return }
 
         let interval = CMTime(value: 1, timescale: 30)
+        timeObserverOwner = player
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) {
             [weak self] time in
             guard let self else { return }
