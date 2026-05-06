@@ -130,11 +130,13 @@ class ComparisonMTKView: MTKView {
 
     // MARK: - Drag and Drop
 
-    private func mediaURL(from info: NSDraggingInfo) -> URL? {
+    /// Read all file URLs from a drag, filter to media we support, preserving
+    /// the user's drop order.
+    private func mediaURLs(from info: NSDraggingInfo) -> [URL] {
         guard let items = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
-        ]) as? [URL], let url = items.first else { return nil }
-        return MediaType.isSupported(url) ? url : nil
+        ]) as? [URL] else { return [] }
+        return items.filter { MediaType.isSupported($0) }
     }
 
     private func sideForDrag(_ info: NSDraggingInfo) -> MediaSide {
@@ -143,13 +145,13 @@ class ComparisonMTKView: MTKView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard mediaURL(from: sender) != nil else { return [] }
+        guard !mediaURLs(from: sender).isEmpty else { return [] }
         dropSide = sideForDrag(sender)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard mediaURL(from: sender) != nil else { dropSide = nil; return [] }
+        guard !mediaURLs(from: sender).isEmpty else { dropSide = nil; return [] }
         dropSide = sideForDrag(sender)
         return .copy
     }
@@ -160,10 +162,18 @@ class ComparisonMTKView: MTKView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         defer { dropSide = nil }
-        guard let url = mediaURL(from: sender), let engine else { return false }
-        let side = sideForDrag(sender)
-        Task { @MainActor in
-            engine.loadMedia(url: url, side: side)
+        let urls = mediaURLs(from: sender)
+        guard !urls.isEmpty, let engine else { return false }
+
+        if urls.count == 1 {
+            // Single file: respect drop position (left half → A, right half → B).
+            let side = sideForDrag(sender)
+            Task { @MainActor in engine.loadMedia(url: urls[0], side: side) }
+        } else {
+            // Multi-file drop: load the first two as a comparison pair regardless
+            // of drop position. Drop position no longer carries useful meaning
+            // when both sides will be replaced.
+            Task { @MainActor in engine.loadMediaBatch(urls: urls) }
         }
         return true
     }

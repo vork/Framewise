@@ -195,6 +195,31 @@ final class MediaEngine: ObservableObject {
         }
     }
 
+    /// Load 1+ files at once using natural side-selection rules:
+    ///
+    /// - 1 file: load into the first empty side; if both sides are full,
+    ///   replace side A.
+    /// - 2+ files: load files[0] → A and files[1] → B, replacing whatever
+    ///   is currently on those sides. Extra files are ignored.
+    ///
+    /// Unsupported files are filtered out before routing.
+    func loadMediaBatch(urls: [URL]) {
+        let supported = urls.filter { MediaType.isSupported($0) }
+        guard !supported.isEmpty else { return }
+
+        if supported.count == 1 {
+            let side: MediaSide
+            if mediaKindA == nil { side = .a }
+            else if mediaKindB == nil { side = .b }
+            else { side = .a }
+            loadMedia(url: supported[0], side: side)
+            return
+        }
+
+        loadMedia(url: supported[0], side: .a)
+        loadMedia(url: supported[1], side: .b)
+    }
+
     func unloadMedia(side: MediaSide) {
         switch side {
         case .a:

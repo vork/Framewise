@@ -77,7 +77,9 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Toggle pixel inspection | `P` |
 | Show keyboard shortcuts | `?` |
 
-**Drag-and-drop:** Drop a video or image file onto the left half of the window to load it as A, or onto the right half for B. A blue or orange highlight indicates which side will receive the file. You can mix kinds — e.g. compare a rendered EXR against the encoded video, or two stills against each other.
+**Drag-and-drop:** Drop a video or image file onto the left half of the window to load it as A, or onto the right half for B. A blue or orange highlight indicates which side will receive the file. **Drop two files at once** and they'll be loaded into A and B as a fresh comparison pair (drop position is ignored for multi-file drops). You can mix kinds — e.g. compare a rendered EXR against the encoded video, or two stills against each other.
+
+**Open With Framewise:** Framewise registers as a viewer for video and image types, so it appears in Finder's _Open With_ menu. Selecting two files and choosing _Open With → Framewise_ loads them as a comparison pair. You can also drag files onto the app icon in the Dock or run `open -a Framewise file1.exr file2.exr` from the terminal.
 
 ## Building
 

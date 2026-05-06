@@ -28,5 +28,51 @@
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Video</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+                <string>public.video</string>
+                <string>public.audiovisual-content</string>
+                <string>com.apple.quicktime-movie</string>
+                <string>public.mpeg-4</string>
+                <string>public.mpeg</string>
+                <string>public.mpeg-2-video</string>
+                <string>org.matroska.mkv</string>
+                <string>org.webmproject.webm</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+                <string>public.jpeg</string>
+                <string>public.png</string>
+                <string>public.tiff</string>
+                <string>public.heic</string>
+                <string>public.heif</string>
+                <string>public.webp</string>
+                <string>public.camera-raw-image</string>
+                <string>com.adobe.raw-image</string>
+                <string>com.ilm.openexr-image</string>
+                <string>org.khronos.ktx</string>
+                <string>public.radiance</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

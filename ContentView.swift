@@ -46,6 +46,7 @@ struct ContentView: View {
     @StateObject private var engine = MediaEngine()
     @State private var frameInput: String = ""
     @State private var showHelp = false
+    @State private var hostWindow: NSWindow?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,6 +112,20 @@ struct ContentView: View {
         .background(Color.black)
         .preferredColorScheme(.dark)
         .focusable()
+        // Capture our hosting NSWindow so we can detect when WE become key.
+        .background(WindowAccessor(window: $hostWindow))
+        // Register this engine with the URLRouter so files opened from
+        // Finder, the Dock, or `open` reach the front-most window.
+        .onAppear { URLRouter.shared.register(engine: engine) }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            if let win = note.object as? NSWindow, win === hostWindow {
+                URLRouter.shared.register(engine: engine)
+            }
+        }
+        // SwiftUI single-URL fallback for environments where
+        // `application(_:open:)` isn't invoked. Idempotent with the AppDelegate
+        // path; both ultimately call into the router.
+        .onOpenURL { url in URLRouter.shared.deliver(urls: [url]) }
         // ── Playback ─────────────────────────────────────────
         .onKeyPress(.space) { engine.togglePlayPause(); return .handled }
         .onKeyPress(.leftArrow) { engine.stepBackward(); return .handled }
@@ -628,4 +643,20 @@ struct ContentView: View {
         }
         return types
     }
+}
+
+// MARK: - Window discovery
+// Tiny NSViewRepresentable that captures its parent NSWindow when the view is
+// added to the hierarchy. Used so each ContentView can tell when its own
+// window becomes key (vs. some other window in the app).
+private struct WindowAccessor: NSViewRepresentable {
+    @Binding var window: NSWindow?
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            self.window = view?.window
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
