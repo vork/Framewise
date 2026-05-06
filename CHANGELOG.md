@@ -5,6 +5,50 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-06
+
+### Added
+- File-association support: Framewise registers as a viewer for common video
+  and image types via `CFBundleDocumentTypes`, so files can be opened from
+  Finder ("Open With → Framewise"), the Dock icon, or `open -a Framewise …`.
+- Multi-file open: dropping two files onto the window — or selecting two
+  in Finder and choosing _Open With → Framewise_ — loads them as side A and
+  side B as a fresh comparison pair (drop position is ignored for
+  multi-file drops). Single-file drops still respect the drop position.
+- `URLRouter` dispatches URLs delivered to the app via
+  `application(_:open:)` to the front-most window's engine, buffering URLs
+  during cold launch until a window registers.
+- Hover pixel readout chip: a bottom-anchored chip shows channel-tinted
+  RGB(A) values for both sides plus a delta computed by the currently
+  selected error metric, labelled with the metric symbol (`Δ`, `|Δ|`,
+  `Δ²`, `|Δ|/(B+ε)`, `Δ²/(B²+ε)`).
+- In-shader pixel value overlay now renders alpha when alpha is
+  non-trivial: α ≠ 1 in split mode, or Δα ≠ 0 in error mode.
+- The hover chip automatically hides when the in-shader pixel value
+  overlay is active, so the two readouts no longer compete for the same
+  screen real estate.
+- Dynamic version stamping: `CFBundleShortVersionString` and
+  `CFBundleVersion` are derived at build time from `git describe` /
+  `git rev-list --count` by `scripts/apply-version.sh`, invoked from both
+  `build.sh` and the GitHub Actions workflow. `MARKETING_VERSION` and
+  `BUILD_VERSION` environment variables override the values when needed.
+- Curated `CHANGELOG.md` shipped with the project; GitHub release notes
+  for tagged builds are now sourced from the matching changelog section
+  by the build workflow instead of auto-generated commit subjects.
+
+### Changed
+- Renamed `VideoEngine` to `MediaEngine`. Per-side state moved from
+  `videoSizeA/B`, `hasVideoA/B`, `videoNameA/B`, `videoAspect`, and
+  `referenceVideoSize` to the `media*` equivalents. The matching shader
+  uniforms (`videoSizeA/B`, `videoAspect`, `hasVideoA/B`) were renamed to
+  `mediaSizeA/B`, `mediaAspect`, and `hasMediaA/B`.
+- Maximum zoom raised from 200× to 2000× so the in-shader pixel value
+  overlay reliably triggers on high-resolution media (the overlay
+  activates when a source pixel covers ≥ 56 screen pixels).
+- `M` cycles the error metric in any display mode (previously gated to
+  error mode). In split mode, the change is reflected in the hover chip's
+  delta calculation and label symbol.
+
 ## [0.4.0] - 2026-05-05
 
 ### Added
