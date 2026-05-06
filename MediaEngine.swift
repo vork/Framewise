@@ -40,6 +40,28 @@ enum ErrorMetric: Int, CaseIterable {
     case squaredError = 2
     case relativeAbsolute = 3
     case relativeSquared = 4
+
+    /// Same formulas as the Metal `computeError` in `ShaderSource.swift`,
+    /// using the same epsilon (0.01) for the relative metrics so the chip
+    /// readout matches the on-screen pixels exactly.
+    func apply(a: SIMD3<Float>, b: SIMD3<Float>) -> SIMD3<Float> {
+        let diff = a - b
+        switch self {
+        case .error:            return diff
+        case .absoluteError:    return abs(diff)
+        case .squaredError:     return diff * diff
+        case .relativeAbsolute:
+            let denom = abs(b) + SIMD3<Float>(repeating: 0.01)
+            return abs(diff) / denom
+        case .relativeSquared:
+            let denom = b * b + SIMD3<Float>(repeating: 0.01)
+            return (diff * diff) / denom
+        }
+    }
+}
+
+private func abs(_ v: SIMD3<Float>) -> SIMD3<Float> {
+    SIMD3<Float>(Swift.abs(v.x), Swift.abs(v.y), Swift.abs(v.z))
 }
 
 enum TonemapMode: Int, CaseIterable {

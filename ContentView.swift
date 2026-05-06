@@ -28,6 +28,18 @@ extension ErrorMetric {
         case .relativeSquared: return "Rel Sq"
         }
     }
+
+    /// Compact symbolic label for the hover-readout chip — short enough to sit
+    /// inline with the channel values.
+    var symbol: String {
+        switch self {
+        case .error:            return "\u{0394}"          // Δ
+        case .absoluteError:    return "|\u{0394}|"        // |Δ|
+        case .squaredError:     return "\u{0394}\u{00B2}"  // Δ²
+        case .relativeAbsolute: return "|\u{0394}|/B"
+        case .relativeSquared:  return "(\u{0394}/B)\u{00B2}"
+        }
+    }
 }
 
 extension TonemapMode {
@@ -267,15 +279,21 @@ struct ContentView: View {
     }
 
     private func deltaChip(a: MediaEngine.PixelSample, b: MediaEngine.PixelSample) -> some View {
-        let d = a.rgba - b.rgba
+        // Use the same per-channel formula the shader uses for the active error
+        // metric so the chip readout matches the rendered error-mode pixels.
+        let metric = engine.errorMetric
+        let aRGB = SIMD3<Float>(a.rgba.x, a.rgba.y, a.rgba.z)
+        let bRGB = SIMD3<Float>(b.rgba.x, b.rgba.y, b.rgba.z)
+        let d = metric.apply(a: aRGB, b: bRGB)
         return HStack(spacing: 6) {
-            Text("\u{0394}")
+            Text(metric.symbol)
                 .foregroundStyle(.white.opacity(0.85))
             channelText("R", d.x, tint: .red.opacity(0.8))
             channelText("G", d.y, tint: .green.opacity(0.8))
             channelText("B", d.z, tint: Color(red: 0.4, green: 0.6, blue: 1.0).opacity(0.8))
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .help("Error metric: \(metric.label)")
     }
 
     // MARK: - Empty State
