@@ -79,6 +79,26 @@ struct ContentView: View {
                     emptyStateView
                 }
 
+                // Pixel hover readout (bottom). Suppress when zoomed in far
+                // enough that the in-shader per-pixel value overlay is on, so
+                // the user never sees both readouts at once.
+                GeometryReader { proxy in
+                    let overlayActive = engine.inShaderTextOverlayActive(viewSize: proxy.size)
+                    if !overlayActive,
+                       (engine.hoverSampleA != nil || engine.hoverSampleB != nil) {
+                        VStack {
+                            Spacer()
+                            pixelReadout
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 10)
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                    }
+                }
+                .allowsHitTesting(false)
+
                 // Help overlay
                 if showHelp {
                     helpOverlay
@@ -98,7 +118,7 @@ struct ContentView: View {
         .onKeyPress(.home) { engine.seekToStart(); return .handled }
         .onKeyPress(.end) { engine.seekToEnd(); return .handled }
         // ── Zoom ─────────────────────────────────────────────
-        .onKeyPress(.upArrow) { engine.zoom = min(200, engine.zoom * 1.25); return .handled }
+        .onKeyPress(.upArrow) { engine.zoom = min(VideoEngine.maxZoom, engine.zoom * 1.25); return .handled }
         .onKeyPress(.downArrow) { engine.zoom = max(0.1, engine.zoom / 1.25); return .handled }
         .onKeyPress("r") { engine.resetView(); return .handled }
         .onKeyPress("1") { engine.zoom = 1.0; return .handled }
@@ -161,6 +181,86 @@ struct ContentView: View {
         .padding(.trailing, 6)
         .padding(.vertical, 5)
         .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Pixel Readout
+
+    var pixelReadout: some View {
+        let a = engine.hoverSampleA
+        let b = engine.hoverSampleB
+        // Pixel coords come from whichever side is loaded. If both are loaded
+        // and have the same dimensions the values match; if dimensions differ,
+        // we report A's coords (it's the reference for aspect anyway).
+        let coord: CGPoint? = a?.pixel ?? b?.pixel
+
+        return HStack(spacing: 14) {
+            if let s = a {
+                sampleChip(label: "A", color: .blue, sample: s)
+            }
+            if let s = b {
+                sampleChip(label: "B", color: .orange, sample: s)
+            }
+            if let sa = a, let sb = b {
+                deltaChip(a: sa, b: sb)
+            }
+            Spacer(minLength: 8)
+            if let p = coord {
+                Text("x: \(Int(p.x))  y: \(Int(p.y))")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func sampleChip(label: String, color: Color, sample: VideoEngine.PixelSample) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(label)
+                .foregroundStyle(.white.opacity(0.85))
+            channelText("R", sample.rgba.x, tint: .red)
+            channelText("G", sample.rgba.y, tint: .green)
+            channelText("B", sample.rgba.z, tint: Color(red: 0.4, green: 0.6, blue: 1.0))
+            if sample.hasAlpha && abs(sample.rgba.w - 1.0) > 0.001 {
+                channelText("A", sample.rgba.w, tint: .white)
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+    }
+
+    private func channelText(_ name: String, _ v: Float, tint: Color) -> some View {
+        HStack(spacing: 2) {
+            Text(name).foregroundStyle(tint.opacity(0.85))
+            Text(formatChannel(v)).foregroundStyle(.white)
+        }
+    }
+
+    /// Emit a monospaced fixed-width number suitable for HDR-range floats.
+    private func formatChannel(_ v: Float) -> String {
+        guard v.isFinite else { return v.isNaN ? " NaN " : (v < 0 ? " -Inf" : " +Inf") }
+        let mag = abs(v)
+        if mag >= 1000 { return String(format: "%6.0f", v) }
+        if mag >= 100  { return String(format: "%6.1f", v) }
+        if mag >= 10   { return String(format: "%6.2f", v) }
+        return String(format: "%+6.3f", v)
+    }
+
+    private func deltaChip(a: VideoEngine.PixelSample, b: VideoEngine.PixelSample) -> some View {
+        let d = a.rgba - b.rgba
+        return HStack(spacing: 6) {
+            Text("\u{0394}")
+                .foregroundStyle(.white.opacity(0.85))
+            channelText("R", d.x, tint: .red.opacity(0.8))
+            channelText("G", d.y, tint: .green.opacity(0.8))
+            channelText("B", d.z, tint: Color(red: 0.4, green: 0.6, blue: 1.0).opacity(0.8))
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
     }
 
     // MARK: - Empty State
@@ -243,6 +343,7 @@ struct ContentView: View {
                         shortcutSection("Pixel Inspection", shortcuts: [
                             ("P", "Toggle pixel grid + RGB values overlay"),
                             ("Zoom in", "Auto-shows when pixels are large enough"),
+                            ("Hover", "RGB readout (linear sRGB) appears at the bottom"),
                         ])
 
                         shortcutSection("Loading Media", shortcuts: [

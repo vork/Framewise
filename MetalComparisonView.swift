@@ -64,6 +64,11 @@ class ComparisonMTKView: MTKView {
     // Drag-and-drop state
     var dropSide: VideoSide? = nil  // which side is highlighted during drag
 
+    /// Last hover texCoord (post aspect/zoom/pan), in [0,1]² when the cursor
+    /// is over the image and `nil` otherwise. Read by the renderer to refresh
+    /// the readout when a new video frame arrives.
+    private(set) var lastHoverTexCoord: SIMD2<Float>?
+
     override init(frame: CGRect, device: MTLDevice?) {
         super.init(frame: frame, device: device)
         registerForDraggedTypes([.fileURL])
@@ -79,8 +84,48 @@ class ComparisonMTKView: MTKView {
         for area in trackingAreas { removeTrackingArea(area) }
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited],
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
             owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        lastHoverTexCoord = nil
+        guard let engine else { return }
+        Task { @MainActor in engine.clearHover() }
+    }
+
+    /// Convert a mouse location in view coordinates into the same texCoord
+    /// space that the vertex shader produces (post aspect-fit / zoom / pan),
+    /// then push the result into the engine for sampling.
+    func updateHover(at loc: CGPoint) {
+        guard let engine, bounds.width > 0, bounds.height > 0 else { return }
+
+        var u = Double(loc.x / bounds.width)
+        var v = Double(loc.y / bounds.height)
+
+        let viewAR = Double(bounds.width / bounds.height)
+        let videoAR = engine.referenceAspectRatio
+        if viewAR > videoAR {
+            let scale = videoAR / viewAR
+            u = (u - 0.5) / scale + 0.5
+        } else {
+            let scale = viewAR / videoAR
+            v = (v - 0.5) / scale + 0.5
+        }
+        u = (u - 0.5) / engine.zoom + 0.5 + Double(engine.panOffset.x)
+        v = (v - 0.5) / engine.zoom + 0.5 + Double(engine.panOffset.y)
+
+        if u >= 0, u < 1, v >= 0, v < 1 {
+            lastHoverTexCoord = SIMD2<Float>(Float(u), Float(v))
+            Task { @MainActor in engine.setHover(viewU: u, viewV: v) }
+        } else {
+            lastHoverTexCoord = nil
+            Task { @MainActor in engine.clearHover() }
+        }
     }
 
     // MARK: - Drag and Drop
@@ -157,16 +202,21 @@ class ComparisonMTKView: MTKView {
                 )
             }
         }
+        updateHover(at: loc)
     }
 
     override func mouseUp(with event: NSEvent) {
         isDraggingSlider = false
         isDraggingPan = false
-        updateCursorForPosition(convert(event.locationInWindow, from: nil))
+        let loc = convert(event.locationInWindow, from: nil)
+        updateCursorForPosition(loc)
+        updateHover(at: loc)
     }
 
     override func mouseMoved(with event: NSEvent) {
-        updateCursorForPosition(convert(event.locationInWindow, from: nil))
+        let loc = convert(event.locationInWindow, from: nil)
+        updateCursorForPosition(loc)
+        updateHover(at: loc)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -325,12 +375,21 @@ extension MetalComparisonView {
             let itemTime = engine.playerA?.currentTime() ?? engine.playerB?.currentTime() ?? .zero
 
             // Update texture A based on what's loaded on side A.
+            var newFrameA = false
             switch engine.mediaKindA {
             case .video:
                 if let output = engine.videoOutputA,
                    output.hasNewPixelBuffer(forItemTime: itemTime),
                    let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                    textureA = renderPixelBufferToTexture(pb, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
+                    let ci = CIImage(cvPixelBuffer: pb)
+                    engine.latestCIImageA = ci
+                    textureA = renderCIImage(ci,
+                                             targetWidth: CVPixelBufferGetWidth(pb),
+                                             targetHeight: CVPixelBufferGetHeight(pb),
+                                             existingTexture: textureA,
+                                             sizeMemo: &textureSizeA,
+                                             commandBuffer: cb)
+                    newFrameA = true
                 }
                 renderedImageVersionA = -1
             case .image:
@@ -343,12 +402,21 @@ extension MetalComparisonView {
             }
 
             // Update texture B based on what's loaded on side B.
+            var newFrameB = false
             switch engine.mediaKindB {
             case .video:
                 if let output = engine.videoOutputB,
                    output.hasNewPixelBuffer(forItemTime: itemTime),
                    let pb = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                    textureB = renderPixelBufferToTexture(pb, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
+                    let ci = CIImage(cvPixelBuffer: pb)
+                    engine.latestCIImageB = ci
+                    textureB = renderCIImage(ci,
+                                             targetWidth: CVPixelBufferGetWidth(pb),
+                                             targetHeight: CVPixelBufferGetHeight(pb),
+                                             existingTexture: textureB,
+                                             sizeMemo: &textureSizeB,
+                                             commandBuffer: cb)
+                    newFrameB = true
                 }
                 renderedImageVersionB = -1
             case .image:
@@ -358,6 +426,13 @@ extension MetalComparisonView {
                 }
             case .none:
                 renderedImageVersionB = -1
+            }
+
+            // If a new video frame arrived and the user is currently hovering,
+            // re-sample so the readout reflects the freshly-decoded frame.
+            if (newFrameA || newFrameB),
+               let hover = (view as? ComparisonMTKView)?.lastHoverTexCoord {
+                engine.setHover(viewU: Double(hover.x), viewV: Double(hover.y))
             }
 
             // Build uniforms
@@ -401,24 +476,6 @@ extension MetalComparisonView {
 
             cb.present(drawable)
             cb.commit()
-        }
-
-        // MARK: - Pixel Buffer → Texture via CIImage (handles HDR color management)
-
-        private func renderPixelBufferToTexture(
-            _ pixelBuffer: CVPixelBuffer,
-            existingTexture: MTLTexture?,
-            sizeMemo: inout CGSize,
-            commandBuffer: MTLCommandBuffer
-        ) -> MTLTexture? {
-            let width = CVPixelBufferGetWidth(pixelBuffer)
-            let height = CVPixelBufferGetHeight(pixelBuffer)
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            return renderCIImage(ciImage,
-                                 targetWidth: width, targetHeight: height,
-                                 existingTexture: existingTexture,
-                                 sizeMemo: &sizeMemo,
-                                 commandBuffer: commandBuffer)
         }
 
         // MARK: - CIImage (still image) → Texture

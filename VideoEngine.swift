@@ -103,6 +103,24 @@ final class VideoEngine: ObservableObject {
         didSet { UserDefaults.standard.set(pixelInspect, forKey: "pixelInspect") }
     }
 
+    // MARK: - Hover readout
+    /// One sampled pixel from the source CIImage of one side, in linear sRGB
+    /// (extended range, so HDR EXR / HDR HEIC values can exceed 1.0).
+    struct PixelSample: Equatable {
+        var pixel: CGPoint            // top-left origin, integer-aligned
+        var rgba: SIMD4<Float>        // linear sRGB, extended
+        var hasAlpha: Bool            // true when source has a non-opaque alpha channel
+    }
+
+    @Published private(set) var hoverSampleA: PixelSample?
+    @Published private(set) var hoverSampleB: PixelSample?
+
+    /// The most recent frame's CIImage for each side, used by hover-sampling.
+    /// For images this is set by `loadImage`; for videos it is updated by the
+    /// renderer every time it pulls a new pixel buffer.
+    var latestCIImageA: CIImage?
+    var latestCIImageB: CIImage?
+
     var frameRateA: Double = 24
     var frameRateB: Double = 24
     var videoSizeA: CGSize = CGSize(width: 1920, height: 1080)
@@ -112,6 +130,16 @@ final class VideoEngine: ObservableObject {
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     var isScrubbing = false
+
+    // Software-rendered context for 1×1 pixel readbacks. Software path avoids
+    // contending with the rendering MTL CIContext on every mouse move and is
+    // plenty fast for one-pixel reads.
+    private lazy var sampleContext: CIContext = CIContext(options: [
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+        .useSoftwareRenderer: true,
+        .cacheIntermediates: false,
+    ])
+    private let readoutColorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     // MARK: - Init (restore persisted settings)
     init() {
@@ -133,6 +161,28 @@ final class VideoEngine: ObservableObject {
         return 16.0 / 9.0
     }
 
+    /// The size of whichever side is the reference for the layout (A wins).
+    /// Returns nil when no media is loaded.
+    var referenceVideoSize: CGSize? {
+        if hasVideoA { return videoSizeA }
+        if hasVideoB { return videoSizeB }
+        return nil
+    }
+
+    /// Mirror of the shader's per-pixel-text threshold. When this returns true
+    /// at the current zoom + view size, the in-shader overlay is drawing
+    /// readable RGB(A) values inside every visible pixel cell, so the
+    /// SwiftUI hover chip can be suppressed to avoid duplicate readouts.
+    func inShaderTextOverlayActive(viewSize: CGSize) -> Bool {
+        guard pixelInspect, let size = referenceVideoSize,
+              size.width > 0, size.height > 0,
+              viewSize.width > 0, viewSize.height > 0 else { return false }
+        let fitScale = min(viewSize.width / size.width,
+                           viewSize.height / size.height)
+        let pixelOnScreen = fitScale * zoom
+        return pixelOnScreen > 56.0  // matches `showText` in ShaderSource.swift
+    }
+
     // MARK: - Load / Unload
 
     /// Dispatch loader: picks video or image path based on extension.
@@ -152,6 +202,8 @@ final class VideoEngine: ObservableObject {
             playerA = nil
             videoOutputA = nil
             imageA = nil
+            latestCIImageA = nil
+            hoverSampleA = nil
             hasVideoA = false
             videoNameA = nil
             mediaKindA = nil
@@ -160,6 +212,8 @@ final class VideoEngine: ObservableObject {
             playerB = nil
             videoOutputB = nil
             imageB = nil
+            latestCIImageB = nil
+            hoverSampleB = nil
             hasVideoB = false
             videoNameB = nil
             mediaKindB = nil
@@ -269,6 +323,7 @@ final class VideoEngine: ObservableObject {
             playerA = nil
             videoOutputA = nil
             imageA = image
+            latestCIImageA = image
             imageVersionA &+= 1
             hasVideoA = true
             videoNameA = url.lastPathComponent
@@ -280,6 +335,7 @@ final class VideoEngine: ObservableObject {
             playerB = nil
             videoOutputB = nil
             imageB = image
+            latestCIImageB = image
             imageVersionB &+= 1
             hasVideoB = true
             videoNameB = url.lastPathComponent
@@ -290,6 +346,77 @@ final class VideoEngine: ObservableObject {
 
         recalculateDuration()
         setupTimeObserver()
+    }
+
+    // MARK: - Hover sampling
+
+    /// Update the hover sample at a normalized texture coordinate.
+    /// `viewU/V` are in the post-aspect / post-zoom / post-pan tex-coord space,
+    /// where (0,0) is the bottom-left of the image and (1,1) is the top-right —
+    /// matching the convention used by the vertex shader.
+    func setHover(viewU: Double, viewV: Double) {
+        let inside = viewU >= 0 && viewU < 1 && viewV >= 0 && viewV < 1
+        guard inside else { clearHover(); return }
+
+        if let img = latestCIImageA {
+            hoverSampleA = sample(image: img, size: videoSizeA, u: viewU, v: viewV,
+                                  hasAlpha: kindHasAlpha(.a))
+        } else {
+            hoverSampleA = nil
+        }
+        if let img = latestCIImageB {
+            hoverSampleB = sample(image: img, size: videoSizeB, u: viewU, v: viewV,
+                                  hasAlpha: kindHasAlpha(.b))
+        } else {
+            hoverSampleB = nil
+        }
+    }
+
+    func clearHover() {
+        if hoverSampleA != nil { hoverSampleA = nil }
+        if hoverSampleB != nil { hoverSampleB = nil }
+    }
+
+    /// Heuristic: assume video has no meaningful alpha; trust images to tell us.
+    /// (Refining further would require sniffing the source via CGImageSource.)
+    private func kindHasAlpha(_ side: VideoSide) -> Bool {
+        switch side == .a ? mediaKindA : mediaKindB {
+        case .image: return true
+        default: return false
+        }
+    }
+
+    private func sample(image: CIImage, size: CGSize, u: Double, v: Double,
+                        hasAlpha: Bool) -> PixelSample? {
+        let w = Int(size.width.rounded())
+        let h = Int(size.height.rounded())
+        guard w > 0, h > 0 else { return nil }
+
+        let px = max(0, min(w - 1, Int(u * Double(w))))
+        let py = max(0, min(h - 1, Int(v * Double(h))))
+
+        // CIImage's coordinate system is bottom-left origin and may have a
+        // non-zero extent origin (e.g. after `oriented(forExifOrientation:)`).
+        let extent = image.extent
+        let bounds = CGRect(x: CGFloat(px) + extent.origin.x,
+                            y: CGFloat(py) + extent.origin.y,
+                            width: 1, height: 1)
+
+        var pixel = SIMD4<Float>.zero
+        withUnsafeMutablePointer(to: &pixel) { ptr in
+            sampleContext.render(image,
+                                 toBitmap: UnsafeMutableRawPointer(ptr),
+                                 rowBytes: 16,
+                                 bounds: bounds,
+                                 format: .RGBAf,
+                                 colorSpace: readoutColorSpace)
+        }
+
+        // Translate to user-friendly top-left-origin pixel coordinates.
+        let displayY = h - 1 - py
+        return PixelSample(pixel: CGPoint(x: px, y: displayY),
+                           rgba: pixel,
+                           hasAlpha: hasAlpha)
     }
 
     private func recalculateDuration() {
@@ -396,12 +523,16 @@ final class VideoEngine: ObservableObject {
         gamma = 2.2
     }
 
+    /// Zoom range: 0.1× to 2000× so even 10K assets can reach the per-pixel
+    /// text overlay threshold (~56 screen pixels per source pixel).
+    static let maxZoom: Double = 2000
+
     func zoomAtPoint(factor: Double, viewPoint: CGPoint, viewSize: CGSize) {
         let cx = viewPoint.x / viewSize.width
         let cy = 1.0 - viewPoint.y / viewSize.height
 
         let oldZoom = zoom
-        let newZoom = max(0.1, min(200, oldZoom * factor))
+        let newZoom = max(0.1, min(Self.maxZoom, oldZoom * factor))
         let invDiff = 1.0 / oldZoom - 1.0 / newZoom
 
         panOffset = CGPoint(

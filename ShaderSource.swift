@@ -200,50 +200,57 @@ CharBuf formatValue(float v) {
     return out;
 }
 
-// Draws three lines of values (e.g. R/G/B) inside the [0,1]² cell.
+// Draws 3 or 4 lines of values inside the [0,1]² cell.
+// `showAlpha == true` adds a 4th line for the alpha channel; when false, only
+// R/G/B are shown in the more compact 3-line layout.
 // Returns rgba — alpha=0 if outside any glyph stroke.
 //
 // Layout (font-pixel grid):
 //   margin 2 px | 6 chars × (3 cols + 1 gap) − 1 gap = 23 px | margin 2 px
-//   margin 2 px | 3 lines × (5 rows + 1 gap) − 1 gap = 17 px | margin 2 px
-// → cell content rendered on a virtual 27×21 grid.
-float4 renderPixelText(float2 cellPos, float3 values, float3 color0,
-                       float3 color1, float3 color2) {
+//   margin 2 px | N lines × (5 rows + 1 gap) − 1 gap = 6N − 1 px | margin 2 px
+// 3-line cell: 27×21,  4-line cell: 27×27.
+float4 renderPixelText(float2 cellPos, float4 values, bool showAlpha,
+                       float3 color0, float3 color1,
+                       float3 color2, float3 color3) {
+    int numLines  = showAlpha ? 4 : 3;
+    float lineSpan = float(6 * numLines - 1);    // 17 or 23
+    float H = lineSpan + 4.0;                    // 21 or 27
+
     // Flip Y so text reads top-down (cellPos.y=1 is top of cell in our space)
     float2 p = float2(cellPos.x, 1.0 - cellPos.y);
 
     const float W = 27.0;
-    const float H = 21.0;
     float fx = p.x * W - 2.0;
     float fy = p.y * H - 2.0;
 
-    if (fx < 0.0 || fx >= 23.0 || fy < 0.0 || fy >= 17.0) {
+    if (fx < 0.0 || fx >= 23.0 || fy < 0.0 || fy >= lineSpan) {
         return float4(0.0);
     }
 
     int x = int(fx);
     int y = int(fy);
 
-    // Identify line and intra-line row
-    int line;
-    int charY;
-    if (y < 5)        { line = 0; charY = y; }
-    else if (y == 5)  { return float4(0.0); }
-    else if (y < 11)  { line = 1; charY = y - 6; }
-    else if (y == 11) { return float4(0.0); }
-    else              { line = 2; charY = y - 12; }
+    // Identify line and intra-line row using the 5-on / 1-off pattern.
+    int line  = y / 6;
+    int charY = y - line * 6;
+    if (charY > 4) return float4(0.0);  // gap row between lines
+    if (line >= numLines) return float4(0.0);
 
-    int slot = x / 4;
+    int slot  = x / 4;
     int charX = x % 4;
     if (slot < 0 || slot >= 6) return float4(0.0);
-    if (charX >= 3) return float4(0.0); // gap column
+    if (charX >= 3) return float4(0.0); // gap column between glyphs
 
-    float v = (line == 0) ? values.r : (line == 1) ? values.g : values.b;
+    float v;
+    float3 col;
+    if (line == 0)      { v = values.r; col = color0; }
+    else if (line == 1) { v = values.g; col = color1; }
+    else if (line == 2) { v = values.b; col = color2; }
+    else                { v = values.a; col = color3; }
+
     CharBuf buf = formatValue(v);
     int g = buf.c[slot];
     if (!glyphPixel(g, charX, charY)) return float4(0.0);
-
-    float3 col = (line == 0) ? color0 : (line == 1) ? color1 : color2;
     return float4(col, 1.0);
 }
 
@@ -318,16 +325,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
 
     // ── Compute base output color and the values to display ──────
     float4 outColor;
-    float3 valuesToShow = float3(0.0);
+    float4 valuesToShow = float4(0.0, 0.0, 0.0, 1.0);
     bool valuesValid = false;
     bool isErrorMode = (u.displayMode == 1 && u.hasVideoA != 0 && u.hasVideoB != 0);
     bool fragmentOnSideA = false;   // true if split-mode pixel reads from A
 
     if (isErrorMode) {
-        float3 a = texA.sample(sLinear, tcA).rgb;
-        float3 b = texB.sample(sLinear, tcB).rgb;
-        float3 err = computeError(a, b, u.errorMetric);
-        valuesToShow = err;
+        float4 a = texA.sample(sLinear, tcA);
+        float4 b = texB.sample(sLinear, tcB);
+        float3 err = computeError(a.rgb, b.rgb, u.errorMetric);
+        // For error mode, alpha line shows the alpha difference (signed).
+        valuesToShow = float4(err, a.a - b.a);
         valuesValid = true;
         float3 mapped = applyTonemap(err, u.tonemapMode, u.exposure, u.gamma);
         outColor = float4(mapped, 1.0);
@@ -337,17 +345,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
 
         if (normX < u.sliderPosition && u.hasVideoA != 0) {
             color = texA.sample(sLinear, tcA);
-            valuesToShow = color.rgb;
+            valuesToShow = color;
             valuesValid = true;
             fragmentOnSideA = true;
         } else if (u.hasVideoB != 0) {
             color = texB.sample(sLinear, tcB);
-            valuesToShow = color.rgb;
+            valuesToShow = color;
             valuesValid = true;
             fragmentOnSideA = false;
         } else if (u.hasVideoA != 0) {
             color = texA.sample(sLinear, tcA);
-            valuesToShow = color.rgb;
+            valuesToShow = color;
             valuesValid = true;
             fragmentOnSideA = true;
         } else {
@@ -392,14 +400,23 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
             : (fragmentOnSideA ? sizeA : (u.hasVideoB != 0 ? sizeB : sizeA));
         float2 cellPos = fract(tc * textSize);
         // Contrast color picked from base output: dark text on bright cells,
-        // bright text on dark cells. Channel-tinted so R/G/B lines are
+        // bright text on dark cells. Channel-tinted so R/G/B(/A) lines are
         // identifiable at a glance.
         float bright = (outColor.r + outColor.g + outColor.b) / 3.0;
         bool darkCell = bright <= 0.5;
         float3 cR = darkCell ? float3(1.00, 0.55, 0.55) : float3(0.50, 0.00, 0.00);
         float3 cG = darkCell ? float3(0.55, 1.00, 0.55) : float3(0.00, 0.45, 0.00);
         float3 cB = darkCell ? float3(0.55, 0.75, 1.00) : float3(0.00, 0.10, 0.55);
-        float4 t = renderPixelText(cellPos, valuesToShow, cR, cG, cB);
+        // Alpha line is colored neutrally so it's distinct from the RGB rows.
+        float3 cA = darkCell ? float3(0.85, 0.85, 0.85) : float3(0.20, 0.20, 0.20);
+        // Only show the alpha line when it carries information:
+        //   • split mode: alpha differs from a fully-opaque pixel
+        //   • error mode: any alpha delta worth reporting
+        bool showAlpha = isErrorMode
+            ? (abs(valuesToShow.a) > 0.001)
+            : (abs(valuesToShow.a - 1.0) > 0.001);
+        float4 t = renderPixelText(cellPos, valuesToShow, showAlpha,
+                                   cR, cG, cB, cA);
         outColor.rgb = mix(outColor.rgb, t.rgb, t.a);
     }
 
