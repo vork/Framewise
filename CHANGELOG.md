@@ -5,6 +5,15 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-05-06
+
+### Fixed
+- Fixed a crash that could occur when clicking the × button on a video
+  badge. The periodic time observer is now tracked alongside the
+  `AVPlayer` it was registered on, so unloading a side no longer leaves
+  the observer's token attached to a deallocated player or attempts to
+  remove it from the wrong one.
+
 ## [0.5.0] - 2026-05-06
 
 ### Added
