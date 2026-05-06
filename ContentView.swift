@@ -160,10 +160,8 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress("m") {
-            if engine.displayMode == .error {
-                let next = (engine.errorMetric.rawValue + 1) % ErrorMetric.allCases.count
-                engine.errorMetric = ErrorMetric(rawValue: next)!
-            }
+            let next = (engine.errorMetric.rawValue + 1) % ErrorMetric.allCases.count
+            engine.errorMetric = ErrorMetric(rawValue: next)!
             return .handled
         }
         .onKeyPress("f") {
