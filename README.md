@@ -10,6 +10,8 @@ A native macOS app for side-by-side video and image comparison with a split-view
 
 - **Side-by-side comparison** with draggable slider — videos, still images, or any mix of the two
 - **Error visualization mode** — view the difference between the two sources with multiple error metrics and tonemapping options (inspired by [tev](https://github.com/Tom94/tev))
+- **HDR-aware error exploration** — tile-based analysis surfaces the top-error regions by category (highlight bias, shadow bias, color shift, fireflies, denoising blur, texture loss, ringing). Click a tile to zoom in
+- **Comprehensive metrics** — MAE, MSE, RMSE, PSNR (linear and log-domain), SSIM, MS-SSIM, CIE ΔE, relative error, max / P99 outliers, and per-luminance-bucket breakdowns
 - **Drag-and-drop** — drop a video or image onto the left or right half of the window to load it as A or B
 - **HDR support** — HDR videos, EXR/HDR HEIC stills, and wide-gamut images flow through Core Image and display on EDR-capable screens; SDR falls back automatically
 - **4K and beyond** — handles any resolution your hardware supports
@@ -43,6 +45,7 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Squared Error | `(A - B)²` | Emphasizes larger differences |
 | Relative Absolute | `abs(A - B) / (abs(B) + ε)` | Normalized by reference brightness |
 | Relative Squared | `(A - B)² / (B² + ε)` | Normalized squared difference |
+| Log-Luminance | `log₁₀(|A|+ε) − log₁₀(|B|+ε)` | Scale-aware for HDR — a 2× exposure shift shows up as a constant ≈0.30 offset everywhere instead of being dominated by bright pixels |
 
 **Visualization Modes** (cycle with `F`):
 
@@ -55,6 +58,58 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 **Exposure & Gamma:**
 - **Exposure (EV):** -10 to +10 stops. Scales the image by `2^EV`. Works in both split and error modes.
 - **Gamma (γ):** 0.1 to 5.0. Controls the display gamma curve.
+
+## HDR Error Exploration
+
+Press `X` (or click **Explore** in the toolbar) to open the exploration
+panel. It runs tile-based analysis on the currently-displayed frame and
+surfaces the highest-error regions, grouped by *kind* of error rather than
+a single global PSNR number.
+
+**Categories** (each ranks tiles using a fitting loss tuned to the
+phenomenon):
+
+| Category | Fitting loss | Catches |
+|----------|--------------|---------|
+| Overall | mean `|A − B|` | Generic regression |
+| Highlight bias | `|A − B| / max(|B|, ε)` in bright pixels | Clipped / mis-mapped highlights |
+| Shadow bias | mean signed `(A − B)` in dark pixels | Lifted blacks, crushed shadows |
+| Color shift | CIE76 ΔE in L\*a\*b\* (D65) | Hue / saturation drift |
+| Fireflies | `max-error / mean-error` ratio × max | Sparse hot pixels, denoiser outliers |
+| Denoising blur | `(‖∇A‖ − ‖∇B‖) / ‖∇A‖` | Lost high-frequency detail in B |
+| Texture loss | `1 − SSIM` (luma) | Structural detail loss |
+| Ringing | edge-weighted `|∇²A − ∇²B|` | Overshoot near sharp edges |
+
+**Global metrics** the panel reports alongside the regions:
+
+- **Linear-domain:** MAE, MSE, RMSE, PSNR, relative error, max / P99 error
+- **Scale-aware (HDR):** log-space MAE, log-space PSNR (10-stop reference range)
+- **Structural:** SSIM, MS-SSIM (averaged over 3 scales)
+- **Perceptual:** mean CIE76 ΔE in L\*a\*b\*
+- **Error by luminance bucket:** shadows (≤0.05), mid-tones (0.05–0.5),
+  highlights (0.5–1.0), HDR super-highlights (>1.0). Lets you tell at a
+  glance whether the model fails in shadows vs. bright pixels — a naive
+  MSE on HDR data is usually dominated by a few peak-luminance outliers.
+
+**Highlight modes** for the on-image overlay:
+
+| Mode | Behaviour |
+|------|-----------|
+| Off | Hidden |
+| Outline | Outlined rectangles only — image untouched |
+| Spotlight | Everything outside top regions is dimmed |
+| Focus | After clicking a tile, dim everything except the clicked region |
+
+Click any region card in the panel to zoom the comparison view onto that
+tile and surface a white focus outline.
+
+> **Multi-channel EXR / AOVs:** Framewise reads EXR files via Apple's
+> ImageIO, which only exposes the default RGBA layer. Custom AOVs (Z,
+> normals, motion vectors, named render-element layers) are not currently
+> reachable — they would require an OpenEXR-aware loader and a layer
+> picker. Standard RGB/RGBA EXRs (including HDR linear scene-referred
+> values, which the analyzer keeps in linear extended-sRGB throughout) are
+> fully supported and flow into all the metrics above.
 
 ## Controls
 
@@ -75,6 +130,7 @@ Visualizes the pixel-level difference between the two videos. Toggle with `E` or
 | Increase / decrease gamma | `}` / `{` (Shift + `]` / `[`) |
 | Reset exposure & gamma | `0` |
 | Toggle pixel inspection | `P` |
+| Toggle error exploration | `X` |
 | Show keyboard shortcuts | `?` |
 
 **Drag-and-drop:** Drop a video or image file onto the left half of the window to load it as A, or onto the right half for B. A blue or orange highlight indicates which side will receive the file. **Drop two files at once** and they'll be loaded into A and B as a fresh comparison pair (drop position is ignored for multi-file drops). You can mix kinds — e.g. compare a rendered EXR against the encoded video, or two stills against each other.
@@ -149,9 +205,11 @@ git push origin v1.0.0
 |------|---------|
 | `FramewiseApp.swift` | App entry point |
 | `ContentView.swift` | SwiftUI UI layout, controls, and help overlay |
-| `MediaEngine.swift` | Per-side media state (videos via AVPlayer, images via CIImage), playback synchronization, hover-sample readback, persisted settings |
+| `MediaEngine.swift` | Per-side media state (videos via AVPlayer, images via CIImage), playback synchronization, hover-sample readback, persisted settings, error-exploration state |
 | `MetalComparisonView.swift` | Metal rendering pipeline, CIImage color management, drag-and-drop |
-| `ShaderSource.swift` | Metal shaders — split view, error metrics, tonemapping, drop highlight |
+| `ShaderSource.swift` | Metal shaders — split view, error metrics, tonemapping, drop highlight, analyzer-region outlines |
+| `ErrorAnalyzer.swift` | Tile-based HDR-aware error analysis: category fitting losses, SSIM/MS-SSIM, ΔE in L\*a\*b\*, log-space PSNR, per-luminance-bucket stats |
+| `ExplorerView.swift` | Explorer panel UI — category chips, top-N% slider, global metrics, luminance buckets, region cards |
 
 The rendering pipeline uses **CIImage** for color-managed pixel buffer conversion (handling HDR/SDR automatically) and a **Metal** shader for both the split-view composition and error visualization with zoom/pan support.
 

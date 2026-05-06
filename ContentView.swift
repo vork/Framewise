@@ -26,6 +26,7 @@ extension ErrorMetric {
         case .squaredError: return "Sq Error"
         case .relativeAbsolute: return "Rel Abs"
         case .relativeSquared: return "Rel Sq"
+        case .logLuminance: return "Log-Lum"
         }
     }
 
@@ -38,6 +39,7 @@ extension ErrorMetric {
         case .squaredError:     return "\u{0394}\u{00B2}"  // Δ²
         case .relativeAbsolute: return "|\u{0394}|/B"
         case .relativeSquared:  return "(\u{0394}/B)\u{00B2}"
+        case .logLuminance:     return "log\u{2081}\u{2080}A\u{2212}log\u{2081}\u{2080}B"
         }
     }
 }
@@ -119,8 +121,14 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if engine.explorerOpen {
+                ExplorerPanel(engine: engine)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             controlsBar
         }
+        .animation(.easeInOut(duration: 0.18), value: engine.explorerOpen)
         .background(Color.black)
         .preferredColorScheme(.dark)
         .focusable()
@@ -177,6 +185,16 @@ struct ContentView: View {
         .onKeyPress("0") { engine.exposure = 0; engine.gamma = 2.2; return .handled }
         // ── Pixel inspection ─────────────────────────────────
         .onKeyPress("p") { engine.pixelInspect.toggle(); return .handled }
+        // ── Error exploration ────────────────────────────────
+        .onKeyPress("x") {
+            if engine.hasMediaA && engine.hasMediaB {
+                engine.explorerOpen.toggle()
+                if engine.explorerOpen && engine.analysisResult == nil {
+                    engine.runAnalysis()
+                }
+            }
+            return .handled
+        }
         // ── Help ─────────────────────────────────────────────
         .onKeyPress("?") { showHelp.toggle(); return .handled }
         .onKeyPress(.escape) {
@@ -377,6 +395,12 @@ struct ContentView: View {
                             ("Hover", "RGB readout (linear sRGB) appears at the bottom"),
                         ])
 
+                        shortcutSection("Error Exploration", shortcuts: [
+                            ("X", "Toggle HDR error exploration panel"),
+                            ("Click tile", "Zoom into a top-error region"),
+                            ("Categories", "Highlights · Shadows · Color · Fireflies · Blur · Texture · Ringing"),
+                        ])
+
                         shortcutSection("Loading Media", shortcuts: [
                             ("Drop / Open", "Videos: mov, mp4, mkv, webm, avi, …"),
                             ("Drop / Open", "Images: png, jpg, webp, heic, exr, hdr, raw, …"),
@@ -557,9 +581,33 @@ struct ContentView: View {
                         Text(m.label).tag(m)
                     }
                 }
-                .frame(width: 120)
+                .frame(width: 140)
                 .help("Error metric (M to cycle)")
             }
+
+            // Explorer toggle — surfaces top-error regions by category.
+            Divider().frame(height: 16)
+            Button {
+                engine.explorerOpen.toggle()
+                if engine.explorerOpen && engine.analysisResult == nil {
+                    engine.runAnalysis()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "scope")
+                    Text("Explore")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(engine.explorerOpen
+                            ? Color.yellow.opacity(0.30)
+                            : Color.white.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 5))
+                .foregroundStyle(.white.opacity(0.9))
+            }
+            .buttonStyle(.plain)
+            .help("Toggle HDR error exploration (X)")
         }
 
         // Visualization mode: available with any video loaded

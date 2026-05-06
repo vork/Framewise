@@ -40,6 +40,7 @@ enum ErrorMetric: Int, CaseIterable {
     case squaredError = 2
     case relativeAbsolute = 3
     case relativeSquared = 4
+    case logLuminance = 5         // log10(A+ε) − log10(B+ε) — HDR scale-aware
 
     /// Same formulas as the Metal `computeError` in `ShaderSource.swift`,
     /// using the same epsilon (0.01) for the relative metrics so the chip
@@ -56,8 +57,18 @@ enum ErrorMetric: Int, CaseIterable {
         case .relativeSquared:
             let denom = b * b + SIMD3<Float>(repeating: 0.01)
             return (diff * diff) / denom
+        case .logLuminance:
+            // log10(|a|+ε) − log10(|b|+ε). Matches the shader; the absolute
+            // value lets negative HDR values (which CIImage can carry) still
+            // produce a well-defined log error.
+            let eps = SIMD3<Float>(repeating: 0.001)
+            return log10v(abs(a) + eps) - log10v(abs(b) + eps)
         }
     }
+}
+
+private func log10v(_ v: SIMD3<Float>) -> SIMD3<Float> {
+    SIMD3<Float>(log10f(v.x), log10f(v.y), log10f(v.z))
 }
 
 private func abs(_ v: SIMD3<Float>) -> SIMD3<Float> {
@@ -87,7 +98,19 @@ final class MediaEngine: ObservableObject {
     @Published private(set) var imageVersionB: Int = 0
 
     // MARK: - Published State
-    @Published var isPlaying = false
+    @Published var isPlaying = false {
+        didSet {
+            if !oldValue && isPlaying {
+                // Playback would make every new frame's overlay stale —
+                // drop the analysis so the UI shows a "pause to refresh"
+                // prompt instead of the previous frame's regions.
+                analysisResult = nil
+                focusedRegionID = nil
+            } else if oldValue && !isPlaying {
+                triggerAutoAnalysisIfNeeded()
+            }
+        }
+    }
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var currentFrame: Int = 0
@@ -125,6 +148,55 @@ final class MediaEngine: ObservableObject {
         didSet { UserDefaults.standard.set(pixelInspect, forKey: "pixelInspect") }
     }
 
+    // MARK: - Error exploration (HDR-aware tile analysis)
+
+    /// How the on-image highlight overlay renders top-error tiles.
+    enum HighlightStyle: Int, CaseIterable, Identifiable {
+        case off = 0          // panel hidden, shader off
+        case outline = 1      // outlined rectangles only
+        case dim = 2          // dim everything outside the highlights
+        case focus = 3        // only the focused rect is bright (used after click)
+
+        var id: Int { rawValue }
+        var label: String {
+            switch self {
+            case .off:     return "Off"
+            case .outline: return "Outline"
+            case .dim:     return "Spotlight"
+            case .focus:   return "Focus"
+            }
+        }
+    }
+
+    /// True when the explorer panel is open. Persisted so the user's
+    /// preference survives across launches.
+    @Published var explorerOpen: Bool = false {
+        didSet {
+            UserDefaults.standard.set(explorerOpen, forKey: "explorerOpen")
+            if explorerOpen && !oldValue {
+                triggerAutoAnalysisIfNeeded()
+            }
+        }
+    }
+    @Published var explorerCategory: ErrorCategory = .overall {
+        didSet { UserDefaults.standard.set(explorerCategory.rawValue, forKey: "explorerCategory") }
+    }
+    /// Fraction of regions to surface, 0.001 (0.1%) to 0.5 (50%).
+    @Published var explorerTopFraction: Double = 0.01 {
+        didSet { UserDefaults.standard.set(explorerTopFraction, forKey: "explorerTopFraction") }
+    }
+    @Published var highlightStyle: HighlightStyle = .outline {
+        didSet { UserDefaults.standard.set(highlightStyle.rawValue, forKey: "highlightStyle") }
+    }
+    @Published private(set) var analysisResult: AnalysisResult?
+    @Published private(set) var isAnalyzing: Bool = false
+    @Published var focusedRegionID: UUID?
+
+    /// Set when an auto-analysis request arrived while one was already running.
+    /// The in-flight analysis is for the *previous* frame, so we need to re-run
+    /// once it finishes to catch up to whatever the user is now looking at.
+    private var pendingAutoAnalysis: Bool = false
+
     // MARK: - Hover readout
     /// One sampled pixel from the source CIImage of one side, in linear sRGB
     /// (extended range, so HDR EXR / HDR HEIC values can exceed 1.0).
@@ -156,7 +228,20 @@ final class MediaEngine: ObservableObject {
     // dereferences a dangling token from the deallocated original owner).
     private weak var timeObserverOwner: AVPlayer?
     private var cancellables = Set<AnyCancellable>()
-    var isScrubbing = false
+    @Published var isScrubbing = false {
+        didSet {
+            if !oldValue && isScrubbing {
+                analysisResult = nil
+                focusedRegionID = nil
+            } else if oldValue && !isScrubbing {
+                triggerAutoAnalysisIfNeeded()
+            }
+        }
+    }
+    /// Generation counter so only the most recently scheduled "scrub ended"
+    /// callback flips `isScrubbing` back to false. Without it, rapid slider
+    /// updates queue overlapping resets and the flag flickers mid-drag.
+    private var scrubResetGeneration: UInt64 = 0
 
     // Software-rendered context for 1×1 pixel readbacks. Software path avoids
     // contending with the rendering MTL CIContext on every mouse move and is
@@ -176,6 +261,18 @@ final class MediaEngine: ObservableObject {
         if let v = TonemapMode(rawValue: ud.integer(forKey: "tonemapMode")) { tonemapMode = v }
         if ud.object(forKey: "pixelInspect") != nil {
             pixelInspect = ud.bool(forKey: "pixelInspect")
+        }
+        if ud.object(forKey: "explorerOpen") != nil {
+            explorerOpen = ud.bool(forKey: "explorerOpen")
+        }
+        if let v = ErrorCategory(rawValue: ud.integer(forKey: "explorerCategory")) {
+            explorerCategory = v
+        }
+        if ud.object(forKey: "explorerTopFraction") != nil {
+            explorerTopFraction = max(0.001, min(0.5, ud.double(forKey: "explorerTopFraction")))
+        }
+        if let v = HighlightStyle(rawValue: ud.integer(forKey: "highlightStyle")) {
+            highlightStyle = v
         }
     }
 
@@ -248,6 +345,9 @@ final class MediaEngine: ObservableObject {
     }
 
     func unloadMedia(side: MediaSide) {
+        // Analysis is keyed to the loaded pair; invalidate on any media
+        // change so the panel doesn't show stale regions.
+        clearAnalysis()
         switch side {
         case .a:
             playerA?.pause()
@@ -279,6 +379,7 @@ final class MediaEngine: ObservableObject {
     }
 
     func loadVideo(url: URL, side: MediaSide) {
+        clearAnalysis()
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let playerItem = AVPlayerItem(asset: asset)
 
@@ -356,6 +457,7 @@ final class MediaEngine: ObservableObject {
     /// Load a still image (jpg/png/webp/heic/exr/hdr/raw/etc.) onto the given side.
     /// Uses CIImage so HDR (EXR / HDR HEIC) and wide-gamut sources are preserved.
     func loadImage(url: URL, side: MediaSide) {
+        clearAnalysis()
         // `expandToHDR` enables HDR gain-map decoding (HDR HEIC) on macOS 14+;
         // it's harmless for SDR images. EXR/HDR linear values flow through naturally.
         let opts: [CIImageOption: Any] = [.expandToHDR: true]
@@ -549,9 +651,14 @@ final class MediaEngine: ObservableObject {
         isScrubbing = true
         let time = CMTime(seconds: position * duration, preferredTimescale: 9000)
         seek(to: time)
-        // Brief delay before allowing time observer to update seekPosition
+        // Brief delay before allowing time observer to update seekPosition.
+        // Generation counter ensures only the *last* update's reset fires —
+        // earlier callbacks land mid-drag and would otherwise toggle the flag.
+        scrubResetGeneration &+= 1
+        let gen = scrubResetGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.isScrubbing = false
+            guard let self, self.scrubResetGeneration == gen else { return }
+            self.isScrubbing = false
         }
     }
 
@@ -649,6 +756,123 @@ final class MediaEngine: ObservableObject {
         if duration > 0 {
             seekPosition = time.seconds / duration
         }
+    }
+
+    // MARK: - Error exploration
+
+    /// Kick off a background analysis of the currently displayed frame on
+    /// both sides. The result is published on the main actor when ready;
+    /// the panel UI observes `analysisResult` / `isAnalyzing`.
+    func runAnalysis() {
+        guard hasMediaA, hasMediaB,
+              let a = latestCIImageA, let b = latestCIImageB else { return }
+        if isAnalyzing { return }
+        isAnalyzing = true
+        // Capture as Sendable values for the detached task.
+        let aImage = a, bImage = b
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = ErrorAnalyzer.shared.analyze(a: aImage, b: bImage)
+            await MainActor.run {
+                guard let self else { return }
+                self.analysisResult = result
+                self.isAnalyzing = false
+                // Drop the previous focused region — its IDs no longer exist
+                // in the freshly-computed regions list.
+                self.focusedRegionID = nil
+                // A frame change landed while we were analyzing the previous
+                // frame; re-run so the surfaced result matches what's on screen.
+                if self.pendingAutoAnalysis {
+                    self.pendingAutoAnalysis = false
+                    self.triggerAutoAnalysisIfNeeded()
+                }
+            }
+        }
+    }
+
+    /// Run analysis automatically if the explorer is active and the player is
+    /// settled (paused, not scrubbing). Called by the renderer when a new
+    /// frame buffer lands, and on explorer open. Re-fires after an in-flight
+    /// analysis completes if a new frame arrived in the meantime.
+    func triggerAutoAnalysisIfNeeded() {
+        guard explorerOpen, !isPlaying, !isScrubbing,
+              hasMediaA, hasMediaB,
+              latestCIImageA != nil, latestCIImageB != nil else { return }
+        if isAnalyzing {
+            pendingAutoAnalysis = true
+            return
+        }
+        runAnalysis()
+    }
+
+    /// Discard the current analysis. Called when media reloads or the user
+    /// closes the explorer panel.
+    func clearAnalysis() {
+        analysisResult = nil
+        focusedRegionID = nil
+    }
+
+    /// Top regions for the active explorer settings.
+    var topRegions: [ErrorRegion] {
+        guard let result = analysisResult else { return [] }
+        return result.top(explorerCategory, fraction: explorerTopFraction,
+                          maxCount: 32)
+    }
+
+    /// Rects in tc-space (matching the shader's vertex output) for the active
+    /// top-region selection. Returns at most `kMaxHighlightRects` (the
+    /// renderer enforces the same cap defensively).
+    func highlightShaderRects() -> [SIMD4<Float>] {
+        guard explorerOpen,
+              let result = analysisResult,
+              highlightStyle != .off else { return [] }
+        let regions = topRegions
+        let imgSize = result.analysisSize
+        return regions.map { $0.tcRect(imageSize: imgSize) }
+    }
+
+    /// Index of the currently focused region within `topRegions`, or -1.
+    /// Used by the shader to give the focused outline a hotter color.
+    func highlightFocusedIndex(in count: Int) -> Int {
+        guard let id = focusedRegionID else { return -1 }
+        let regions = topRegions
+        for (i, r) in regions.enumerated() where r.id == id {
+            return i < count ? i : -1
+        }
+        return -1
+    }
+
+    /// Mirror of `highlightStyle.rawValue` exposed as Int32 for the shader.
+    /// Returns 0 when the explorer panel is closed, no analysis is loaded, or
+    /// the highlight style is .off — keeps the shader a no-op.
+    func highlightShaderMode() -> Int32 {
+        guard explorerOpen, analysisResult != nil, highlightStyle != .off else { return 0 }
+        return Int32(highlightStyle.rawValue)
+    }
+
+    /// Frame the camera on a region: pan the centre into the view and zoom
+    /// in enough to fill ~70% of the viewport along whichever axis is bigger.
+    /// Capped at 50× so the user lands in a useful inspection range rather
+    /// than the per-pixel-text overlay.
+    func zoomToRegion(_ region: ErrorRegion) {
+        guard let result = analysisResult else { return }
+        let gridW = result.analysisSize.width
+        let gridH = result.analysisSize.height
+        guard gridW > 0, gridH > 0 else { return }
+
+        // Region centre in the same tc-space the vertex shader uses (y up).
+        let cx = (Double(region.x) + Double(region.width) / 2) / Double(gridW)
+        let cyTopDown = (Double(region.y) + Double(region.height) / 2) / Double(gridH)
+        let cy = 1.0 - cyTopDown
+
+        let tcW = Double(region.width) / Double(gridW)
+        let tcH = Double(region.height) / Double(gridH)
+        let span = max(tcW, tcH)
+        // Aim for the region to fill ~70% of the smaller view dimension; clamp
+        // hard so single-tile crops don't snap straight to 200×.
+        let target = span > 0 ? min(50.0, max(2.0, 0.7 / span)) : zoom
+        zoom = target
+        panOffset = CGPoint(x: cx - 0.5, y: cy - 0.5)
+        focusedRegionID = region.id
     }
 
     private func formatTime(_ seconds: Double) -> String {

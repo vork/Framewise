@@ -43,6 +43,8 @@ jobs:
             ShaderSource.swift \
             MediaEngine.swift \
             MetalComparisonView.swift \
+            ErrorAnalyzer.swift \
+            ExplorerView.swift \
             ContentView.swift \
             -o .build/Framewise-arm64
 
@@ -68,6 +70,8 @@ jobs:
             ShaderSource.swift \
             MediaEngine.swift \
             MetalComparisonView.swift \
+            ErrorAnalyzer.swift \
+            ExplorerView.swift \
             ContentView.swift \
             -o .build/Framewise-x86_64
 

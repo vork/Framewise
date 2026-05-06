@@ -40,6 +40,8 @@ swiftc \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \
+    ErrorAnalyzer.swift \
+    ExplorerView.swift \
     ContentView.swift \
     -o "$BUILD_DIR/Framewise"
 

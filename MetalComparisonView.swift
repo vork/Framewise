@@ -24,8 +24,20 @@ struct Uniforms {
     var gamma: Float = 2.2
     var dropHighlight: Int32 = -1   // -1=none, 0=left, 1=right
     var pixelInspect: Int32 = 1     // 0=off, 1=auto (grid+values when zoomed in)
+    var highlightCount: Int32 = 0   // analyzer rects passed in `highlights`
+    var highlightMode: Int32 = 0    // 0=off, 1=outline, 2=dim+outline, 3=focus
+    var highlightFocus: Int32 = -1  // index of currently-focused rect, or -1
+    var highlightTintR: Float = 1.0
+    var highlightTintG: Float = 0.8
+    var highlightTintB: Float = 0.2
     var _pad0: Float = 0
 }
+
+/// Max analyzer rects we'll pass to the shader in one frame. Anything past
+/// this cap is culled by score. The cap is small on purpose — beyond ~32 the
+/// outlines start to merge visually anyway, and the per-fragment loop in the
+/// shader scales linearly.
+let kMaxHighlightRects: Int = 32
 
 // MARK: - NSViewRepresentable
 
@@ -406,6 +418,7 @@ extension MetalComparisonView {
                 if let img = engine.imageA, engine.imageVersionA != renderedImageVersionA {
                     textureA = renderCIImageToTexture(img, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
                     renderedImageVersionA = engine.imageVersionA
+                    newFrameA = true
                 }
             case .none:
                 renderedImageVersionA = -1
@@ -433,6 +446,7 @@ extension MetalComparisonView {
                 if let img = engine.imageB, engine.imageVersionB != renderedImageVersionB {
                     textureB = renderCIImageToTexture(img, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
                     renderedImageVersionB = engine.imageVersionB
+                    newFrameB = true
                 }
             case .none:
                 renderedImageVersionB = -1
@@ -444,6 +458,22 @@ extension MetalComparisonView {
                let hover = (view as? ComparisonMTKView)?.lastHoverTexCoord {
                 engine.setHover(viewU: Double(hover.x), viewV: Double(hover.y))
             }
+
+            // When the explorer panel is open and the player is settled, run
+            // analysis on the new frame. `triggerAutoAnalysisIfNeeded` handles
+            // the playing/scrubbing/no-media guards.
+            if newFrameA || newFrameB {
+                engine.triggerAutoAnalysisIfNeeded()
+            }
+
+            // Gather analyzer highlight rects (already in tc-space). The
+            // engine produces them off the main thread but we read here on
+            // the main actor, so the slice we capture is consistent.
+            var highlightRects: [SIMD4<Float>] = engine.highlightShaderRects()
+            if highlightRects.count > kMaxHighlightRects {
+                highlightRects = Array(highlightRects.prefix(kMaxHighlightRects))
+            }
+            let focusedIdx = engine.highlightFocusedIndex(in: highlightRects.count)
 
             // Build uniforms
             let ar = engine.referenceAspectRatio
@@ -471,6 +501,12 @@ extension MetalComparisonView {
                     return side == .a ? 0 : 1
                 }(),
                 pixelInspect: engine.pixelInspect ? 1 : 0,
+                highlightCount: Int32(highlightRects.count),
+                highlightMode: engine.highlightShaderMode(),
+                highlightFocus: Int32(focusedIdx),
+                highlightTintR: 1.0,
+                highlightTintG: 0.8,
+                highlightTintB: 0.2,
                 _pad0: 0
             )
 
@@ -479,6 +515,23 @@ extension MetalComparisonView {
             encoder.setRenderPipelineState(pipelineState)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+
+            // `setFragmentBytes` requires non-empty data; always pass at least
+            // one rect so the shader's `constant float4 *highlights` is bound.
+            // `highlightCount = 0` makes the shader's loop a no-op.
+            if highlightRects.isEmpty {
+                var placeholder = SIMD4<Float>(0, 0, 0, 0)
+                encoder.setFragmentBytes(&placeholder,
+                                          length: MemoryLayout<SIMD4<Float>>.stride,
+                                          index: 1)
+            } else {
+                highlightRects.withUnsafeBufferPointer { ptr in
+                    encoder.setFragmentBytes(ptr.baseAddress!,
+                                              length: MemoryLayout<SIMD4<Float>>.stride * highlightRects.count,
+                                              index: 1)
+                }
+            }
+
             encoder.setFragmentTexture(textureA ?? placeholderTexture, index: 0)
             encoder.setFragmentTexture(textureB ?? placeholderTexture, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

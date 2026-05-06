@@ -28,6 +28,12 @@ struct Uniforms {
     float gamma;
     int dropHighlight;  // -1=none, 0=left, 1=right
     int pixelInspect;   // 0=off, 1=auto
+    int highlightCount; // 0..N analyzer rects to render
+    int highlightMode;  // 0=off, 1=outline, 2=dim+outline, 3=focus single
+    int highlightFocus; // index of focused rect, or -1
+    float highlightTintR;
+    float highlightTintG;
+    float highlightTintB;
     float _pad0;
 };
 
@@ -59,6 +65,14 @@ float3 computeError(float3 a, float3 b, int metric) {
         case 2: return diff * diff;                             // Squared Error
         case 3: return abs(diff) / (abs(b) + 0.01);            // Relative Absolute Error
         case 4: return (diff * diff) / (b * b + 0.01);         // Relative Squared Error
+        case 5: {
+            // Log-luminance error — log10(|a|+ε) − log10(|b|+ε). Scale-aware
+            // for HDR: a 2× exposure shift between A and B shows up as a
+            // constant log10(2) ≈ 0.30 offset everywhere, instead of
+            // dwarfing dark pixels under a single bright outlier.
+            float3 eps = float3(0.001);
+            return log10(abs(a) + eps) - log10(abs(b) + eps);
+        }
         default: return abs(diff);
     }
 }
@@ -287,6 +301,7 @@ vertex VertexOut vertexMain(uint vid [[vertex_id]],
 // ── Fragment shader ──────────────────────────────────────────────────
 fragment float4 fragmentMain(VertexOut in [[stage_in]],
                              constant Uniforms &u [[buffer(0)]],
+                             constant float4 *highlights [[buffer(1)]],
                              texture2d<float> texA [[texture(0)]],
                              texture2d<float> texB [[texture(1)]]) {
     constexpr sampler sLinear(filter::linear, address::clamp_to_edge);
@@ -418,6 +433,67 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         float4 t = renderPixelText(cellPos, valuesToShow, showAlpha,
                                    cR, cG, cB, cA);
         outColor.rgb = mix(outColor.rgb, t.rgb, t.a);
+    }
+
+    // ── Analyzer highlight rectangles ────────────────────────────
+    // `highlights[i]` packs the rect as (uMin, vMin, uWidth, vHeight) in the
+    // same texture-coordinate space `tc` lives in, so a rect at the bottom
+    // of the image has vMin near 0. `tc` is already the post-aspect /
+    // post-zoom / post-pan UV from the vertex shader, so we can compare
+    // directly without any of the screen-space gymnastics the slider does.
+    if (u.highlightMode > 0 && u.highlightCount > 0 && inBounds) {
+        bool insideAny    = false;
+        bool insideFocus  = false;
+        bool onOutline    = false;
+        bool onFocusOutline = false;
+        float3 tint = float3(u.highlightTintR, u.highlightTintG, u.highlightTintB);
+
+        // Outline thickness in tc-space, derived so it stays ~1.5 screen
+        // pixels wide regardless of zoom.
+        float thickU = 1.5 * dxTC;
+        float thickV = 1.5 * dyTC;
+
+        for (int i = 0; i < u.highlightCount; ++i) {
+            float4 r = highlights[i];
+            float uMin = r.x;
+            float vMin = r.y;
+            float uMax = r.x + r.z;
+            float vMax = r.y + r.w;
+            bool inside = (tc.x >= uMin && tc.x <= uMax &&
+                           tc.y >= vMin && tc.y <= vMax);
+            if (inside) {
+                insideAny = true;
+                bool isFocused = (i == u.highlightFocus);
+                if (isFocused) insideFocus = true;
+                float dU = min(tc.x - uMin, uMax - tc.x);
+                float dV = min(tc.y - vMin, vMax - tc.y);
+                if (dU < thickU || dV < thickV) {
+                    onOutline = true;
+                    if (isFocused) onFocusOutline = true;
+                }
+            }
+        }
+
+        // Mode semantics:
+        //   1 = outline   → outlines only, image untouched
+        //   2 = spotlight → dim everything outside the top regions
+        //   3 = focus     → dim everything outside the user-focused region;
+        //                   if no focus is set, fall back to spotlight
+        if (u.highlightMode == 2 && !insideAny) {
+            outColor.rgb *= 0.35;
+        } else if (u.highlightMode == 3) {
+            if (u.highlightFocus >= 0) {
+                if (!insideFocus) outColor.rgb *= 0.25;
+            } else if (!insideAny) {
+                outColor.rgb *= 0.35;
+            }
+        }
+        if (onOutline) {
+            // Focused rect gets a brighter / hotter outline so the user can
+            // tell which crop they currently clicked on.
+            float3 outlineColor = onFocusOutline ? float3(1.0, 1.0, 1.0) : tint;
+            outColor.rgb = mix(outColor.rgb, outlineColor, onFocusOutline ? 0.9 : 0.75);
+        }
     }
 
     // ── Comparison slider (split mode only) ──────────────────────
