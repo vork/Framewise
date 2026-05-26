@@ -5,6 +5,17 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-05-26
+
+### Fixed
+- Silenced two build warnings that emerged on top of v0.6.0: the
+  Swift 6 sendability warning in `MediaEngine.runAnalysis` (caused by
+  the `await MainActor.run` closure capturing `var self` from the
+  enclosing `[weak self]` task — now promoted to a strong, immutable
+  binding before the inner closure) and the two `var` → `let` lints
+  for `bucketRanges` and `bucketLabels` in `ErrorAnalyzer.analyze`.
+  No behaviour change.
+
 ## [0.6.0] - 2026-05-26
 
 ### Added
