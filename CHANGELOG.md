@@ -5,6 +5,21 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-05-26
+
+This is a republish of v0.6.0 + v0.6.1 with a CI fix. The v0.6.0 and v0.6.1
+tags exist but their workflow runs failed and produced no downloadable
+artifacts. The v0.6.2 binary contains every change listed under v0.6.0,
+v0.6.1, and the fix below — see those sections for the full notes.
+
+### Fixed
+- Added `TonemapView.swift` to the GitHub Actions Swift compilation step
+  for both the arm64 and x86_64 builds. v0.6.0 introduced the file in
+  `build.sh` and the source tree, but the corresponding workflow update
+  was missed, so CI tag-pushes for v0.6.0 and v0.6.1 failed with
+  `cannot find 'TonemapSettingsButton' in scope` and never produced
+  release artifacts.
+
 ## [0.6.1] - 2026-05-26
 
 ### Fixed
