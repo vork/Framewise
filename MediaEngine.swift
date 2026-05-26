@@ -79,6 +79,174 @@ enum TonemapMode: Int, CaseIterable {
     case gamma = 0
     case falseColor = 1
     case positiveNegative = 2
+    case linear = 3                 // clamp to [0,1], no curve
+    case reinhard = 4               // extended Reinhard with whitepoint
+    case aces = 5                   // Narkowicz fit
+    case filmic = 6                 // Hejl-Burgess-Dawson (fixed)
+    case piecewise = 7              // Hable filmic piecewise power curves (6 params)
+
+    /// Whether this mode has user-tunable parameters beyond exposure.
+    var hasParameters: Bool {
+        switch self {
+        case .gamma, .reinhard, .piecewise: return true
+        case .linear, .aces, .filmic, .falseColor, .positiveNegative: return false
+        }
+    }
+}
+
+/// User-facing parameters for Hable's piecewise power curve. See
+/// https://filmicworlds.com/blog/filmic-tonemapping-with-piecewise-power-curves/
+/// Matches the parameter set in his reference C++ release.
+struct PiecewiseTonemapParams: Equatable, Codable {
+    /// 0..1 — toe curvature. 0 = linear into 0, 1 = full crush.
+    var toeStrength: Float = 0.0
+    /// 0..1 — fraction of input axis taken up by the toe.
+    var toeLength: Float = 0.5
+    /// 0..∞ — stops of headroom above mid grey before the shoulder rolls to 1.
+    /// White point W is derived as `initialW + 2^shoulderStrength − 1`.
+    var shoulderStrength: Float = 2.0
+    /// 0..1 — fraction of the post-toe range taken by the shoulder.
+    var shoulderLength: Float = 0.5
+    /// 0..1 — how much the shoulder bends below the linear extension.
+    var shoulderAngle: Float = 1.0
+    /// >0 — internal curve gamma. 1.0 keeps the middle section truly linear;
+    /// raise it to bake more of an "S-curve" into the response.
+    var gamma: Float = 1.0
+}
+
+/// Precomputed knot coefficients for Hable's piecewise power curve. Computed
+/// once on the CPU when params change; shader uses these directly per-pixel.
+/// Each segment is a power curve in offset/scaled coordinates:
+///   `y = ((x − offsetX) * scaleX)^B * exp(lnA) * scaleY + offsetY`
+/// The middle segment is the same form (it's a gamma'd linear), the toe is
+/// the form anchored at the origin, and the shoulder is mirrored through
+/// the white point.
+struct PiecewiseTonemapKnots: Equatable {
+    var x0: Float = 0.25, y0: Float = 0.25
+    var x1: Float = 0.75, y1: Float = 0.75
+    var W: Float = 1.0
+    var overshootX: Float = 0
+    var overshootY: Float = 0
+
+    // Toe: anchored at origin. y = exp(lnA + B*ln(x))
+    var toeLnA: Float = 0, toeB: Float = 1
+    // Middle: y = exp(midLnA + midB*ln(x - midOffsetX))  → (m*x+b)^gamma form.
+    var midOffsetX: Float = 0
+    var midLnA: Float = 0, midB: Float = 1
+    // Shoulder: mirrored at (shoulderOffsetX, shoulderOffsetY).
+    var shoulderOffsetX: Float = 1, shoulderOffsetY: Float = 1
+    var shoulderLnA: Float = 0, shoulderB: Float = 1
+
+    /// Multiplier baked into the curve so eval(W) == 1.
+    var invScale: Float = 1.0
+}
+
+/// Port of Hable's `CalcDirectParamsFromUser` + `CreateCurve`. The two-step
+/// process turns the 6 user knobs into segment coefficients with C1 continuity
+/// at the knots, then normalizes so the white point lands at output 1.
+func computePiecewiseKnots(_ p: PiecewiseTonemapParams) -> PiecewiseTonemapKnots {
+    var k = PiecewiseTonemapKnots()
+
+    let toeStrength = max(0, min(1, p.toeStrength))
+    let toeLength = max(0, min(1, p.toeLength))
+    let shoulderStrength = max(0, p.shoulderStrength)
+    let shoulderLength = max(0, min(1, p.shoulderLength))
+    let shoulderAngle = max(0, min(1, p.shoulderAngle))
+    let gamma = max(0.01, p.gamma)
+
+    // ── Direct params ───────────────────────────────────────────────
+    // Toe end (pre-gamma): x0 spans the first half of `toeLength` along the
+    // input axis; y0 collapses toward 0 as toeStrength → 1.
+    let x0 = toeLength * 0.5
+    let y0Pre = (1.0 - toeStrength) * x0
+
+    let remainingY = max(1.0 - y0Pre, 1e-6)
+    let initialW = x0 + remainingY      // white point with no extra headroom
+    let y1Offset = (1.0 - shoulderLength) * remainingY
+    let x1 = x0 + y1Offset
+    let y1Pre = y0Pre + y1Offset
+
+    // Stops of extra range — this is the key knob that turns shoulderStrength
+    // from "wiggle the overshoot" into "move the white point".
+    let extraW = exp2f(shoulderStrength) - 1.0
+    let W = initialW + extraW
+
+    let overshootX = (W * 2.0) * shoulderAngle
+    let overshootYPre = 0.5 * shoulderStrength
+
+    // ── Curve construction (gamma applied to y-axis endpoints) ──────
+    // Middle segment slope/intercept BEFORE gamma. m is always positive
+    // because the user params keep y0 ≤ x0 ≤ x1 with monotonic y.
+    let m = (y1Pre - y0Pre) / max(x1 - x0, 1e-6)
+    let b = y0Pre - m * x0
+
+    k.x0 = x0
+    k.x1 = x1
+    k.W = W
+    k.overshootX = overshootX
+
+    // Post-gamma endpoints — the curve in display space is (m*x+b)^gamma.
+    k.y0 = max(1e-5, powf(y0Pre, gamma))
+    k.y1 = max(1e-5, powf(y1Pre, gamma))
+    k.overshootY = powf(1.0 + overshootYPre, gamma) - 1.0
+    k.shoulderOffsetX = 1.0 + overshootX
+    k.shoulderOffsetY = 1.0 + k.overshootY
+
+    // Middle: (m*x+b)^gamma  =  exp(gamma*ln(m) + gamma*ln(x - (-b/m)))
+    k.midOffsetX = -b / max(m, 1e-6)
+    k.midLnA = gamma * logf(max(m, 1e-6))
+    k.midB = gamma
+
+    // Slope of the (gamma'd) middle at x0 and x1 — used to anchor the toe
+    // and shoulder power curves with C1 continuity.
+    let toeM = derivLinearGamma(m: m, b: b, gamma: gamma, x: x0)
+    let shoulderM = derivLinearGamma(m: m, b: b, gamma: gamma, x: x1)
+
+    asSolvePowerCurve(x0: x0, y0: k.y0, m: toeM, lnA: &k.toeLnA, B: &k.toeB)
+
+    let shX0 = (1.0 + overshootX) - x1
+    let shY0 = (1.0 + k.overshootY) - k.y1
+    asSolvePowerCurve(x0: shX0, y0: shY0, m: shoulderM,
+                      lnA: &k.shoulderLnA, B: &k.shoulderB)
+
+    // ── Normalize so eval(W) lands exactly on 1.0 ────────────────────
+    let scale = evalPiecewise(x: W, knots: k)
+    k.invScale = scale > 1e-6 ? 1.0 / scale : 1.0
+    return k
+}
+
+/// Derivative of `(m*x + b)^gamma` at x. Used to extract the slope at the
+/// knot boundaries so the toe and shoulder match the middle in slope.
+private func derivLinearGamma(m: Float, b: Float, gamma: Float, x: Float) -> Float {
+    let inside = max(1e-6, m * x + b)
+    return gamma * powf(inside, gamma - 1) * m
+}
+
+/// Solve `y = exp(lnA + B*ln(x))` for B, lnA so the curve passes through
+/// (x0, y0) with slope `m` at that point.
+private func asSolvePowerCurve(x0: Float, y0: Float, m: Float,
+                               lnA: inout Float, B: inout Float) {
+    guard x0 > 1e-6, y0 > 1e-6, m > 1e-6 else { lnA = 0; B = 1; return }
+    B = (m * x0) / y0
+    lnA = logf(y0) - B * logf(x0)
+}
+
+/// CPU-side evaluation of the assembled curve (un-normalized — apply
+/// `invScale` for display-space output). Mirrors the shader's pwEvalChannel.
+func evalPiecewise(x: Float, knots k: PiecewiseTonemapKnots) -> Float {
+    let xi = max(0, x)
+    if xi < k.x0 {
+        guard xi > 1e-6 else { return 0 }
+        return expf(k.toeLnA + k.toeB * logf(xi))
+    } else if xi < k.x1 {
+        let u = xi - k.midOffsetX
+        guard u > 1e-6 else { return 0 }
+        return expf(k.midLnA + k.midB * logf(u))
+    } else {
+        let u = k.shoulderOffsetX - xi
+        guard u > 1e-6 else { return k.shoulderOffsetY }
+        return k.shoulderOffsetY - expf(k.shoulderLnA + k.shoulderB * logf(u))
+    }
 }
 
 @MainActor
@@ -141,7 +309,24 @@ final class MediaEngine: ObservableObject {
         didSet { UserDefaults.standard.set(tonemapMode.rawValue, forKey: "tonemapMode") }
     }
     @Published var exposure: Double = 0.0
-    @Published var gamma: Double = 2.2
+    @Published var gamma: Double = 2.2 {
+        didSet { UserDefaults.standard.set(gamma, forKey: "tonemapGamma") }
+    }
+    /// Reinhard extended whitepoint — input luminance that maps to display 1.0.
+    @Published var reinhardWhitepoint: Double = 4.0 {
+        didSet { UserDefaults.standard.set(reinhardWhitepoint, forKey: "reinhardWhitepoint") }
+    }
+    /// Hable piecewise filmic parameters. Setting any of these recomputes the
+    /// knot snapshot the shader reads.
+    @Published var piecewiseParams: PiecewiseTonemapParams = PiecewiseTonemapParams() {
+        didSet {
+            piecewiseKnots = computePiecewiseKnots(piecewiseParams)
+            persistPiecewiseParams()
+        }
+    }
+    /// Precomputed shader-ready knots. Updated whenever piecewiseParams changes.
+    @Published private(set) var piecewiseKnots: PiecewiseTonemapKnots =
+        computePiecewiseKnots(PiecewiseTonemapParams())
 
     // Pixel inspection (auto-shows grid + RGB values when zoomed in close enough)
     @Published var pixelInspect: Bool = true {
@@ -273,6 +458,24 @@ final class MediaEngine: ObservableObject {
         }
         if let v = HighlightStyle(rawValue: ud.integer(forKey: "highlightStyle")) {
             highlightStyle = v
+        }
+        if ud.object(forKey: "tonemapGamma") != nil {
+            gamma = ud.double(forKey: "tonemapGamma")
+        }
+        if ud.object(forKey: "reinhardWhitepoint") != nil {
+            reinhardWhitepoint = max(0.1, ud.double(forKey: "reinhardWhitepoint"))
+        }
+        if let data = ud.data(forKey: "piecewiseParams"),
+           let restored = try? JSONDecoder().decode(PiecewiseTonemapParams.self, from: data) {
+            // Assigning triggers didSet → recomputes knots and re-persists,
+            // which is fine: the re-persist is a no-op write of the same blob.
+            piecewiseParams = restored
+        }
+    }
+
+    private func persistPiecewiseParams() {
+        if let data = try? JSONEncoder().encode(piecewiseParams) {
+            UserDefaults.standard.set(data, forKey: "piecewiseParams")
         }
     }
 

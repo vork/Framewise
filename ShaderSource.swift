@@ -34,7 +34,24 @@ struct Uniforms {
     float highlightTintR;
     float highlightTintG;
     float highlightTintB;
+    // Reinhard extended whitepoint.
+    float reinhardWhitepoint;
+    // Hable piecewise-power-curve precomputed knots. CPU recomputes whenever
+    // user-facing params change; shader does a small segment-select per pixel.
+    float pwX0;
+    float pwX1;
+    float pwToeLnA;
+    float pwToeB;
+    float pwMidOffsetX;
+    float pwMidLnA;
+    float pwMidB;
+    float pwShOffsetX;
+    float pwShOffsetY;
+    float pwShLnA;
+    float pwShB;
+    float pwInvScale;
     float _pad0;
+    float _pad1;
 };
 
 // ── False color map ──────────────────────────────────────────────────
@@ -77,28 +94,124 @@ float3 computeError(float3 a, float3 b, int metric) {
     }
 }
 
-// ── Tonemapping / visualization ──────────────────────────────────────
-float3 applyTonemap(float3 col, int mode, float exposure, float gamma) {
-    // Apply exposure (in stops)
-    col = pow(2.0, exposure) * col;
+// ── Tonemapping operators ────────────────────────────────────────────
+// Each operator takes scene-linear (extended) sRGB and returns sRGB-encoded
+// values in [0,1] ready for the display. Exposure (in stops) is applied
+// first, identically for every mode.
 
-    switch (mode) {
+// Extended Reinhard with whitepoint Lw: maps mid-grey to itself when Lw=∞
+// and rolls a hard knee toward 1 around Lw. Applied per-channel; for purer
+// luminance behavior we could go luma-only, but channel-wise tracks the
+// per-channel error metrics the rest of the app uses.
+float3 tonemapReinhard(float3 col, float Lw) {
+    float3 num = col * (1.0 + col / (Lw * Lw));
+    float3 den = 1.0 + col;
+    return num / den;
+}
+
+// ACES filmic, Narkowicz fit. Single-line approximation of the full RRT+ODT;
+// good enough for previewing and several orders of magnitude cheaper.
+float3 tonemapACES(float3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// Hejl-Burgess-Dawson "filmic". Output is already in approximate sRGB
+// (the gamma is baked into the curve), so do NOT apply gamma after.
+float3 tonemapFilmic(float3 col) {
+    float3 x = max(col - 0.004, 0.0);
+    return (x * (6.2 * x + 0.5)) / (x * (6.2 * x + 1.7) + 0.06);
+}
+
+// Evaluate Hable's piecewise power curve for one channel. The CPU
+// precomputes the segment coefficients; here we just pick the right one.
+float pwEvalChannel(float x, constant Uniforms& u) {
+    float xi = max(x, 0.0);
+    float y;
+    if (xi < u.pwX0) {
+        // Toe — power curve through origin.
+        if (xi <= 0.0) {
+            y = 0.0;
+        } else {
+            y = exp(u.pwToeLnA + u.pwToeB * log(xi));
+        }
+    } else if (xi < u.pwX1) {
+        // Middle — gamma'd linear: (m*x + b)^gamma  =
+        //   exp(midLnA + midB * ln(x - midOffsetX))  with midOffsetX = -b/m.
+        float t = xi - u.pwMidOffsetX;
+        if (t <= 0.0) {
+            y = 0.0;
+        } else {
+            y = exp(u.pwMidLnA + u.pwMidB * log(t));
+        }
+    } else {
+        // Shoulder — mirrored power curve.
+        float t = u.pwShOffsetX - xi;
+        if (t <= 0.0) {
+            y = u.pwShOffsetY;
+        } else {
+            y = u.pwShOffsetY - exp(u.pwShLnA + u.pwShB * log(t));
+        }
+    }
+    return y * u.pwInvScale;
+}
+
+float3 tonemapPiecewise(float3 col, constant Uniforms& u) {
+    return float3(pwEvalChannel(col.r, u),
+                  pwEvalChannel(col.g, u),
+                  pwEvalChannel(col.b, u));
+}
+
+// sRGB encoding gamma (used by Linear / Reinhard / ACES / Piecewise so the
+// output is display-ready). Filmic and Gamma handle their own encoding.
+float3 srgbEncode(float3 c) {
+    c = max(c, 0.0);
+    float3 lo = c * 12.92;
+    float3 hi = 1.055 * pow(c, float3(1.0 / 2.4)) - 0.055;
+    return mix(hi, lo, step(c, float3(0.0031308)));
+}
+
+float3 applyTonemap(float3 col, constant Uniforms& u) {
+    // Pre-tonemap exposure adjustment in stops, applied uniformly.
+    col = pow(2.0, u.exposure) * col;
+
+    switch (u.tonemapMode) {
         case 0: {
-            // Gamma: sign-preserving power curve
-            return sign(col) * pow(abs(col), float3(1.0 / gamma));
+            // Gamma — sign-preserving power curve. Keeps negative test
+            // signals visible (used by the error-vis "Error" metric).
+            return sign(col) * pow(abs(col), float3(1.0 / u.gamma));
         }
         case 1: {
-            // False Color: logarithmic mapping to colormap
+            // False Color — log-luminance mapped to a 7-stop colormap.
             float avg = (col.r + col.g + col.b) / 3.0;
             float t = log2(avg + 0.03125) / 10.0 + 0.5;
             return falseColorMap(t);
         }
         case 2: {
-            // Positive/Negative: green = positive, red = negative
+            // Positive / Negative — green = positive, red = negative.
             float avg = (col.r + col.g + col.b) / 3.0;
-            float pos = max(avg, 0.0);
-            float neg = max(-avg, 0.0);
-            return float3(neg, pos, 0.0);
+            return float3(max(-avg, 0.0), max(avg, 0.0), 0.0);
+        }
+        case 3: {
+            // Linear — clamp to display range, sRGB-encode.
+            return srgbEncode(clamp(col, 0.0, 1.0));
+        }
+        case 4: {
+            // Reinhard extended — soft rolloff toward whitepoint, sRGB-encode.
+            return srgbEncode(tonemapReinhard(max(col, 0.0), max(u.reinhardWhitepoint, 1e-4)));
+        }
+        case 5: {
+            // ACES — sRGB-encode (Narkowicz fit returns ~linear values).
+            return srgbEncode(tonemapACES(max(col, 0.0)));
+        }
+        case 6: {
+            // Filmic (HBD) — gamma is baked in, no further sRGB encoding.
+            return tonemapFilmic(max(col, 0.0));
+        }
+        case 7: {
+            // Piecewise (Hable). The precomputed curve is in linear space,
+            // so sRGB-encode the result for the display.
+            return srgbEncode(tonemapPiecewise(max(col, 0.0), u));
         }
         default:
             return col;
@@ -352,7 +465,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         // For error mode, alpha line shows the alpha difference (signed).
         valuesToShow = float4(err, a.a - b.a);
         valuesValid = true;
-        float3 mapped = applyTonemap(err, u.tonemapMode, u.exposure, u.gamma);
+        float3 mapped = applyTonemap(err, u);
         outColor = float4(mapped, 1.0);
     } else {
         float normX = in.position.x / u.viewportSize.x;
@@ -380,7 +493,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         // CIImage outputs sRGB-encoded values. Decode to linear for processing,
         // then apply the selected visualization mode (same pipeline as error mode).
         float3 linear = pow(max(color.rgb, 0.0), float3(2.2));
-        color.rgb = applyTonemap(linear, u.tonemapMode, u.exposure, u.gamma);
+        color.rgb = applyTonemap(linear, u);
         outColor = color;
     }
 

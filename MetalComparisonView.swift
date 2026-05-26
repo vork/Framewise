@@ -19,7 +19,7 @@ struct Uniforms {
     var showSlider: Int32 = 1
     var displayMode: Int32 = 0      // 0=split, 1=error
     var errorMetric: Int32 = 0      // 0..4
-    var tonemapMode: Int32 = 0      // 0=gamma, 1=falseColor, 2=posNeg
+    var tonemapMode: Int32 = 0      // see TonemapMode enum
     var exposure: Float = 0.0
     var gamma: Float = 2.2
     var dropHighlight: Int32 = -1   // -1=none, 0=left, 1=right
@@ -30,7 +30,24 @@ struct Uniforms {
     var highlightTintR: Float = 1.0
     var highlightTintG: Float = 0.8
     var highlightTintB: Float = 0.2
+    // Reinhard extended whitepoint.
+    var reinhardWhitepoint: Float = 4.0
+    // Hable piecewise knots — CPU-precomputed from user params each time
+    // any slider moves. The shader treats these as constants per draw.
+    var pwX0: Float = 0.25
+    var pwX1: Float = 0.75
+    var pwToeLnA: Float = 0
+    var pwToeB: Float = 1
+    var pwMidOffsetX: Float = 0
+    var pwMidLnA: Float = 0
+    var pwMidB: Float = 1
+    var pwShOffsetX: Float = 1
+    var pwShOffsetY: Float = 1
+    var pwShLnA: Float = 0
+    var pwShB: Float = 1
+    var pwInvScale: Float = 1.0
     var _pad0: Float = 0
+    var _pad1: Float = 0
 }
 
 /// Max analyzer rects we'll pass to the shader in one frame. Anything past
@@ -507,7 +524,21 @@ extension MetalComparisonView {
                 highlightTintR: 1.0,
                 highlightTintG: 0.8,
                 highlightTintB: 0.2,
-                _pad0: 0
+                reinhardWhitepoint: Float(engine.reinhardWhitepoint),
+                pwX0: engine.piecewiseKnots.x0,
+                pwX1: engine.piecewiseKnots.x1,
+                pwToeLnA: engine.piecewiseKnots.toeLnA,
+                pwToeB: engine.piecewiseKnots.toeB,
+                pwMidOffsetX: engine.piecewiseKnots.midOffsetX,
+                pwMidLnA: engine.piecewiseKnots.midLnA,
+                pwMidB: engine.piecewiseKnots.midB,
+                pwShOffsetX: engine.piecewiseKnots.shoulderOffsetX,
+                pwShOffsetY: engine.piecewiseKnots.shoulderOffsetY,
+                pwShLnA: engine.piecewiseKnots.shoulderLnA,
+                pwShB: engine.piecewiseKnots.shoulderB,
+                pwInvScale: engine.piecewiseKnots.invScale,
+                _pad0: 0,
+                _pad1: 0
             )
 
             // Render comparison

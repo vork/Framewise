@@ -47,10 +47,22 @@ extension ErrorMetric {
 extension TonemapMode {
     var label: String {
         switch self {
-        case .gamma: return "Gamma"
-        case .falseColor: return "False Color"
+        case .linear:           return "Linear"
+        case .gamma:            return "Gamma"
+        case .reinhard:         return "Reinhard"
+        case .aces:             return "ACES"
+        case .filmic:           return "Filmic"
+        case .piecewise:        return "Piecewise"
+        case .falseColor:       return "False Color"
         case .positiveNegative: return "Pos/Neg"
         }
+    }
+
+    /// Canonical ordering for menus and the F-key cycle: real tonemap
+    /// operators first, then the two error-visualization aids.
+    static var orderedCases: [TonemapMode] {
+        [.linear, .gamma, .reinhard, .aces, .filmic, .piecewise,
+         .falseColor, .positiveNegative]
     }
 }
 
@@ -121,14 +133,18 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if engine.explorerOpen {
+            // Explorer requires both sides loaded — A vs B is the whole point.
+            // Stays hidden (without flipping the persisted flag) when only one
+            // side is present, so opening the second video reveals it again.
+            if engine.explorerOpen && engine.hasMediaA && engine.hasMediaB {
                 ExplorerPanel(engine: engine)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             controlsBar
         }
-        .animation(.easeInOut(duration: 0.18), value: engine.explorerOpen)
+        .animation(.easeInOut(duration: 0.18),
+                   value: engine.explorerOpen && engine.hasMediaA && engine.hasMediaB)
         .background(Color.black)
         .preferredColorScheme(.dark)
         .focusable()
@@ -173,8 +189,9 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress("f") {
-            let next = (engine.tonemapMode.rawValue + 1) % TonemapMode.allCases.count
-            engine.tonemapMode = TonemapMode(rawValue: next)!
+            let ordered = TonemapMode.orderedCases
+            let idx = ordered.firstIndex(of: engine.tonemapMode) ?? 0
+            engine.tonemapMode = ordered[(idx + 1) % ordered.count]
             return .handled
         }
         // ── Exposure & Gamma ─────────────────────────────────
@@ -572,21 +589,24 @@ struct ContentView: View {
             .frame(width: 120)
             .help("Toggle Split/Error mode (E)")
 
-            // Error metric picker: error mode only
-            if engine.displayMode == .error {
-                Divider().frame(height: 16)
+            // Error metric picker: always visible when both sides are loaded.
+            // In split mode the picker still matters because the hover readout
+            // and per-pixel value overlay display the chosen metric.
+            Divider().frame(height: 16)
 
-                Picker("Metric", selection: $engine.errorMetric) {
-                    ForEach(ErrorMetric.allCases, id: \.self) { m in
-                        Text(m.label).tag(m)
-                    }
+            Picker("Metric", selection: $engine.errorMetric) {
+                ForEach(ErrorMetric.allCases, id: \.self) { m in
+                    Text(m.label).tag(m)
                 }
-                .frame(width: 140)
-                .help("Error metric (M to cycle)")
             }
+            .frame(width: 140)
+            .help("Error metric (M to cycle) — drives both error-mode rendering and the hover/value readouts")
 
             // Explorer toggle — surfaces top-error regions by category.
+            // Only meaningful with both sides loaded; disabled otherwise so
+            // the persisted explorerOpen flag isn't silently toggled.
             Divider().frame(height: 16)
+            let canExplore = engine.hasMediaA && engine.hasMediaB
             Button {
                 engine.explorerOpen.toggle()
                 if engine.explorerOpen && engine.analysisResult == nil {
@@ -600,28 +620,54 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(engine.explorerOpen
+                .background(engine.explorerOpen && canExplore
                             ? Color.yellow.opacity(0.30)
                             : Color.white.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 5))
-                .foregroundStyle(.white.opacity(0.9))
+                .foregroundStyle(.white.opacity(canExplore ? 0.9 : 0.4))
             }
             .buttonStyle(.plain)
-            .help("Toggle HDR error exploration (X)")
+            .disabled(!canExplore)
+            .help(canExplore
+                  ? "Toggle HDR error exploration (X)"
+                  : "Load both A and B to enable error exploration")
         }
 
-        // Visualization mode: available with any video loaded
+        // Visualization mode + per-operator inline params.
+        // Modes with a single knob (gamma, reinhard) get an inline slider so
+        // the popover gear only appears for the multi-knob piecewise mode.
         if engine.hasMediaA || engine.hasMediaB {
             Picker("Vis", selection: $engine.tonemapMode) {
-                ForEach(TonemapMode.allCases, id: \.self) { m in
+                ForEach(TonemapMode.orderedCases, id: \.self) { m in
                     Text(m.label).tag(m)
                 }
             }
             .frame(width: 120)
             .help("Visualization mode (F to cycle)")
+
+            switch engine.tonemapMode {
+            case .gamma:
+                inlineSlider(label: "γ",
+                             value: $engine.gamma,
+                             range: 0.1...5.0,
+                             step: 0.1,
+                             format: "%.1f",
+                             width: 60)
+            case .reinhard:
+                inlineSlider(label: "Wp",
+                             value: $engine.reinhardWhitepoint,
+                             range: 0.1...16.0,
+                             step: 0.1,
+                             format: "%.1f",
+                             width: 60)
+            case .piecewise:
+                TonemapSettingsButton(engine: engine)
+            case .linear, .aces, .filmic, .falseColor, .positiveNegative:
+                EmptyView()
+            }
         }
 
-        // Exposure & gamma: available with any video loaded
+        // Exposure (applies pre-tonemap to every operator).
         if engine.hasMediaA || engine.hasMediaB {
             Divider().frame(height: 16)
 
@@ -637,23 +683,33 @@ struct ContentView: View {
             Slider(value: $engine.exposure, in: -10...10, step: 0.1)
                 .frame(width: 70)
                 .controlSize(.mini)
-
-            HStack(spacing: 3) {
-                Text("\u{03B3}")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                Text("\(engine.gamma, specifier: "%.1f")")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .trailing)
-            }
-            Slider(value: $engine.gamma, in: 0.1...5.0, step: 0.1)
-                .frame(width: 50)
-                .controlSize(.mini)
         }
     }
 
     // MARK: - Button Helpers
+
+    /// Compact inline slider with monospaced label + readout. Used for the
+    /// single-knob tonemap operators that don't justify opening the popover.
+    @ViewBuilder
+    func inlineSlider(label: String,
+                      value: Binding<Double>,
+                      range: ClosedRange<Double>,
+                      step: Double,
+                      format: String,
+                      width: CGFloat) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            Text(String(format: format, value.wrappedValue))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .trailing)
+        }
+        Slider(value: value, in: range, step: step)
+            .frame(width: width)
+            .controlSize(.mini)
+    }
 
     func iconButton(_ systemName: String, size: CGFloat = 13, action: @escaping () -> Void) -> some View {
         Button(action: action) {

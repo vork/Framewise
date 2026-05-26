@@ -42,6 +42,7 @@ swiftc \
     MetalComparisonView.swift \
     ErrorAnalyzer.swift \
     ExplorerView.swift \
+    TonemapView.swift \
     ContentView.swift \
     -o "$BUILD_DIR/Framewise"
 
