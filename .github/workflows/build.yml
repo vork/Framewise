@@ -45,6 +45,7 @@ jobs:
             MetalComparisonView.swift \
             ErrorAnalyzer.swift \
             ExplorerView.swift \
+            TonemapView.swift \
             ContentView.swift \
             -o .build/Framewise-arm64
 
@@ -72,6 +73,7 @@ jobs:
             MetalComparisonView.swift \
             ErrorAnalyzer.swift \
             ExplorerView.swift \
+            TonemapView.swift \
             ContentView.swift \
             -o .build/Framewise-x86_64
 
