@@ -5,6 +5,61 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-26
+
+### Added
+- HDR-aware error exploration panel (toggle with `X` or the toolbar
+  **Explore** button; requires both A and B loaded). When open, Framewise
+  runs a tile-based analysis of the current frame on a background thread
+  and surfaces the worst-offending regions for the selected category.
+- Eight error categories, each with its own fitting loss rather than a
+  single global metric: **Overall** (mean |A−B|), **Highlight bias**
+  (relative error in bright pixels), **Shadow bias** (signed mean in dark
+  pixels), **Color shift** (CIE76 ΔE in CIE L*a*b* D65), **Fireflies**
+  (max-pixel-error / mean-error − 1), **Denoising blur** (lost
+  high-frequency gradient energy), **Texture loss** (1 − SSIM), and
+  **Ringing** (Laplacian residual weighted by edge strength in B).
+- Highlight styles for the surfaced regions: **off**, **outline only**,
+  **dim everything outside**, and **focus single** (after clicking a
+  region in the panel). All three on-screen styles are rendered in the
+  shader so they survive zoom and pan.
+- Click any region card in the panel to zoom and pan the comparison view
+  to that region and mark it as focused.
+- Live global statistics computed alongside the regions: MAE, MSE, RMSE,
+  linear PSNR, mean relative error, log-domain MAE / PSNR, mean SSIM,
+  multi-scale SSIM, mean ΔE, max and 99th-percentile pixel error, plus
+  per-bucket MAE / relative-error for shadows (≤ 0.05), mid (0.05–0.5),
+  highlights (0.5–1.0), and HDR (> 1.0).
+- Top-N% slider to widen or narrow the set of surfaced regions, and an
+  **Analyze / Re-analyze** button that refreshes the result. Auto-analysis
+  re-runs when the frame changes, but only while playback is paused and
+  the scrubber is settled.
+- Four new tonemap operators in addition to the existing **Gamma**,
+  **False Color**, and **Pos / Neg**: **Linear** (clamp + sRGB encode),
+  **Reinhard** (extended with a tunable whitepoint), **ACES** (Narkowicz
+  fit), **Filmic** (Hejl-Burgess-Dawson), and **Piecewise** (Hable filmic
+  curve with six user-tunable parameters — toe strength / length,
+  shoulder strength / length / angle, and gamma).
+- Tonemap settings popover (gear button next to the visualization picker)
+  with a live curve preview that mirrors the shader's per-channel
+  response, a Reinhard whitepoint slider, and the six-parameter
+  piecewise editor. Piecewise parameters are persisted via JSON in
+  `UserDefaults`.
+- New error metric **Log luminance** (`log10(A+ε) − log10(B+ε)`),
+  HDR scale-aware. Cycled by `M` alongside the existing five metrics.
+
+### Changed
+- The tonemap picker and the `F`-key cycle now follow a canonical order
+  that puts real display operators first
+  (Linear → Gamma → Reinhard → ACES → Filmic → Piecewise) and the two
+  error-visualization aids last (False Color → Pos / Neg).
+- Starting playback or scrubbing now clears any in-flight analysis result
+  and focus, so the Explorer panel never shows stale regions that don't
+  correspond to the displayed frame. Pausing or releasing the scrubber
+  re-runs analysis automatically when the panel is open.
+- Error-metric picker tooltip clarifies that the metric drives both
+  error-mode rendering and the hover / value readouts.
+
 ## [0.5.1] - 2026-05-06
 
 ### Fixed
