@@ -975,8 +975,11 @@ final class MediaEngine: ObservableObject {
         let aImage = a, bImage = b
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = ErrorAnalyzer.shared.analyze(a: aImage, b: bImage)
+            // Promote to a strong, immutable binding *before* the @Sendable
+            // MainActor closure so Swift 6 doesn't flag the inner capture of
+            // `var self` from the [weak self] outer scope.
+            guard let self else { return }
             await MainActor.run {
-                guard let self else { return }
                 self.analysisResult = result
                 self.isAnalyzing = false
                 // Drop the previous focused region — its IDs no longer exist

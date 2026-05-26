@@ -249,13 +249,13 @@ final class ErrorAnalyzer: @unchecked Sendable {
         var tileMaxes: [Float] = []
         tileMaxes.reserveCapacity(tilesX * tilesY)
         // 4 luminance buckets: shadows, mid, highlights, super-highlights (HDR).
-        var bucketRanges: [(Float, Float)] = [
+        let bucketRanges: [(Float, Float)] = [
             (-.infinity, 0.05),
             (0.05, 0.5),
             (0.5, 1.0),
             (1.0, .infinity)
         ]
-        var bucketLabels = ["shadows ≤0.05", "mid 0.05–0.5", "highlights 0.5–1", "HDR >1"]
+        let bucketLabels = ["shadows ≤0.05", "mid 0.05–0.5", "highlights 0.5–1", "HDR >1"]
         var bucketMAE = [Float](repeating: 0, count: 4)
         var bucketRel = [Float](repeating: 0, count: 4)
         var bucketCount = [Float](repeating: 0, count: 4)
