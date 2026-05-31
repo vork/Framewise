@@ -28,8 +28,10 @@ enum Theme {
     static let warn = Color(hex: 0xF7D97E)
     static let err  = Color(hex: 0xFF7B8A)
 
-    // ── A/B side identity (kept distinct from the purple accent) ─────────────
-    static let sideA = Color(hex: 0x5AA9FF)    // blue
+    // ── A/B side identity ─────────────────────────────────────────────────
+    // Tied to the brand gradient endpoints: A = purple, B = amber. Side A
+    // therefore shares the purple UI accent — intentional, for a tight match.
+    static let sideA = accentA                 // purple
     static let sideB = accentB                 // amber
 
     // ── Gradients ───────────────────────────────────────────────────────────

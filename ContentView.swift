@@ -260,10 +260,10 @@ struct ContentView: View {
 
         return HStack(spacing: 14) {
             if let s = a {
-                sampleChip(label: "A", color: .blue, sample: s)
+                sampleChip(label: "A", color: Theme.sideA, sample: s)
             }
             if let s = b {
-                sampleChip(label: "B", color: .orange, sample: s)
+                sampleChip(label: "B", color: Theme.sideB, sample: s)
             }
             if let sa = a, let sb = b {
                 deltaChip(a: sa, b: sb)

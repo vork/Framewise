@@ -20,8 +20,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   sliders/segmented pickers inherit it via a global tint. Keyboard-shortcut
   keycaps in the help overlay, the tonemap response curve, and the various
   panels (controls bar, explorer, media labels, pixel readout) were restyled
-  to match. A/B side identity stays blue (A) / amber (B) so it never collides
-  with the purple UI accent. All styling is centralised in a new `Theme.swift`.
+  to match. A/B side identity is tied to the brand-gradient endpoints —
+  purple (A) and amber (B) — so the media labels and pixel-readout chips read
+  as the two ends of the brand wash. All styling is centralised in a new
+  `Theme.swift`.
 
 ## [0.6.2] - 2026-05-26
 
