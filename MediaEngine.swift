@@ -480,6 +480,43 @@ final class MediaEngine: ObservableObject {
         channelMode = ChannelMode(rawValue: next) ?? .rgb
     }
 
+    // MARK: - Scopes (histogram / waveform / vectorscope)
+
+    @Published var scopesOpen: Bool = false {
+        didSet {
+            UserDefaults.standard.set(scopesOpen, forKey: "scopesOpen")
+            if scopesOpen && !oldValue { triggerScopesIfNeeded() }
+        }
+    }
+    @Published var scopeMode: ScopeMode = .histogram {
+        didSet { UserDefaults.standard.set(scopeMode.rawValue, forKey: "scopeMode") }
+    }
+    @Published private(set) var scopeDataA: ScopeData?
+    @Published private(set) var scopeDataB: ScopeData?
+    private var isComputingScopes = false
+
+    func toggleScopes() { scopesOpen.toggle() }
+
+    /// Recompute scopes for the current frame. Called by the renderer when a new
+    /// frame lands; the in-flight guard naturally throttles during playback so
+    /// work never piles up (frames are simply sampled).
+    func triggerScopesIfNeeded() {
+        guard scopesOpen, !isComputingScopes else { return }
+        let aImg = latestCIImageA, bImg = latestCIImageB
+        guard aImg != nil || bImg != nil else { scopeDataA = nil; scopeDataB = nil; return }
+        isComputingScopes = true
+        Task.detached(priority: .utility) { [weak self] in
+            let da = aImg.flatMap { ScopeSampler.compute($0) }
+            let db = bImg.flatMap { ScopeSampler.compute($0) }
+            guard let self else { return }
+            await MainActor.run {
+                self.scopeDataA = da
+                self.scopeDataB = db
+                self.isComputingScopes = false
+            }
+        }
+    }
+
     // MARK: - Blink comparison
     //
     // Shows a single side full-frame and flips A↔B in place — the "blink
@@ -725,6 +762,12 @@ final class MediaEngine: ObservableObject {
         }
         if let v = HighlightStyle(rawValue: ud.integer(forKey: "highlightStyle")) {
             highlightStyle = v
+        }
+        if ud.object(forKey: "scopesOpen") != nil {
+            scopesOpen = ud.bool(forKey: "scopesOpen")
+        }
+        if let v = ScopeMode(rawValue: ud.integer(forKey: "scopeMode")) {
+            scopeMode = v
         }
         if ud.object(forKey: "tonemapGamma") != nil {
             gamma = ud.double(forKey: "tonemapGamma")

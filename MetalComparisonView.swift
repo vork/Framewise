@@ -480,6 +480,7 @@ extension MetalComparisonView {
             // the playing/scrubbing/no-media guards.
             if newFrameA || newFrameB {
                 engine.triggerAutoAnalysisIfNeeded()
+                engine.triggerScopesIfNeeded()
             }
 
             // Gather analyzer highlight rects (already in tc-space). The

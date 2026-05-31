@@ -8,6 +8,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Scopes** (`S`) — a histogram (RGB overlaid + luma), waveform, and
+  vectorscope, shown side-by-side for A and B so two videos/renders can be
+  compared at a glance. Computed off the main thread on a downscaled frame and
+  refreshed as frames arrive (work is throttled so it never piles up).
 - **Image sequence support** — drop a folder or multiple numbered frames (e.g.
   `render.0001.exr … render.0240.exr`), or pick them from the Open dialog, to
   load a playable image sequence onto a side. Sequences scrub, step, loop, and

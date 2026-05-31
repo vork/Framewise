@@ -152,6 +152,11 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if engine.scopesOpen && (engine.hasMediaA || engine.hasMediaB) {
+                ScopesPanel(engine: engine)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             controlsBar
         }
         .animation(.easeInOut(duration: 0.18),
@@ -220,6 +225,7 @@ struct ContentView: View {
         .onKeyPress("i") { engine.setLoopIn(); return .handled }
         .onKeyPress("o") { engine.setLoopOut(); return .handled }
         .onKeyPress("l") { engine.toggleLoop(); return .handled }
+        .onKeyPress("s") { engine.toggleScopes(); return .handled }
         // ── Error exploration ────────────────────────────────
         .onKeyPress("x") {
             if engine.hasMediaA && engine.hasMediaB {
@@ -455,9 +461,10 @@ struct ContentView: View {
 
                         shortcutSection("Channels & Playback", shortcuts: [
                             ("C", "Cycle channel isolation (RGB / R / G / B / A / Luma)"),
+                            ("S", "Scopes — histogram / waveform / vectorscope"),
                             ("I  /  O", "Set loop in / out point"),
                             ("L", "Toggle segment loop"),
-                            ("\u{2318} options", "Clipping & gamut warnings, speed, A/B offset"),
+                            ("Options", "Clipping & gamut warnings, speed, A/B offset, seq fps"),
                         ])
 
                         shortcutSection("Exposure & Gamma", shortcuts: [
@@ -639,6 +646,15 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
 
                 if engine.hasMediaA || engine.hasMediaB {
+                    Button { engine.toggleScopes() } label: {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.text.opacity(0.85))
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(GhostButtonStyle(active: engine.scopesOpen))
+                    .help("Scopes — histogram / waveform / vectorscope (S)")
+
                     ViewOptionsButton(engine: engine)
                 }
 

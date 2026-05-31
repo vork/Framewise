@@ -39,6 +39,7 @@ swiftc \
     FramewiseApp.swift \
     Theme.swift \
     ViewOptions.swift \
+    Scopes.swift \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \
