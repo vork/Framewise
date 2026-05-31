@@ -8,6 +8,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **VMAF** (opt-in) — Netflix's perceptual video metric, available as a third
+  metric in the error-over-time graph. Because it needs the native `libvmaf`
+  library, it's gated behind the `FRAMEWISE_VMAF` build flag and off by default;
+  the default build is unaffected. See README → "Building with VMAF". The glue
+  (`VMAFEngine.swift`) streams both sides as YUV420p through libvmaf's built-in
+  `vmaf_v0.6.1` model and charts per-frame scores.
 - **Error-over-time graph** (`T`) — a strip above the scrubber charting the
   chosen metric (MAE or PSNR) per frame across the whole clip, so you can see
   *where* a render/encode breaks rather than just a single global number.

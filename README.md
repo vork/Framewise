@@ -156,6 +156,38 @@ To build with a Developer ID certificate (required for notarization):
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 ```
 
+### Building with VMAF
+
+VMAF (Netflix's perceptual video metric) is **opt-in** because it needs the
+native [`libvmaf`](https://github.com/Netflix/vmaf) library, which isn't pure
+Swift. The default build does not reference it; the integration is gated behind
+the `FRAMEWISE_VMAF` compile flag.
+
+To enable it:
+
+1. Install libvmaf (Homebrew is easiest):
+   ```bash
+   brew install libvmaf
+   ```
+   For a distributable universal app you'll want a universal (arm64 + x86_64)
+   build of `libvmaf`; the Homebrew formula is single-arch per machine.
+2. Build with the flag, pointing at the headers / lib:
+   ```bash
+   FRAMEWISE_VMAF=1 \
+     VMAF_INCLUDE="$(brew --prefix libvmaf)/include" \
+     VMAF_LIB="$(brew --prefix libvmaf)/lib" \
+     ./build.sh
+   ```
+
+When compiled in, **VMAF** appears as a third metric in the **Error over time**
+graph (`T`) and runs an every-frame pass through libvmaf (A = distorted,
+B = reference), using the built-in `vmaf_v0.6.1` model. Without the flag the
+metric is shown but reports that VMAF wasn't compiled in.
+
+> The libvmaf glue in `VMAFEngine.swift` targets the libvmaf v2.x / v3 C API.
+> If your installed libvmaf differs, adjust the calls in that file (it's fully
+> isolated behind `#if FRAMEWISE_VMAF`).
+
 ## GitHub Actions
 
 The included workflow (`.github/workflows/build.yml`) builds a **universal binary** (Apple Silicon + Intel), with optional code-signing and notarization.

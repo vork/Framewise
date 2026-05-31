@@ -6,11 +6,28 @@ import CoreGraphics
 // MARK: - Model
 
 enum TemporalMetric: Int, CaseIterable, Identifiable {
-    case mae = 0, psnr = 1
+    case mae = 0, psnr = 1, vmaf = 2
     var id: Int { rawValue }
-    var label: String { self == .mae ? "MAE" : "PSNR" }
+    var label: String {
+        switch self {
+        case .mae:  return "MAE"
+        case .psnr: return "PSNR"
+        case .vmaf: return "VMAF"
+        }
+    }
     /// True when a higher value is better (so "events" are the low points).
-    var higherIsBetter: Bool { self == .psnr }
+    var higherIsBetter: Bool { self != .mae }
+}
+
+extension MediaEngine {
+    /// Whether VMAF support was compiled in (libvmaf bundled — see README).
+    var vmafAvailable: Bool {
+        #if FRAMEWISE_VMAF
+        return true
+        #else
+        return false
+        #endif
+    }
 }
 
 /// What feeds frames for one side of a temporal scan.
@@ -44,6 +61,19 @@ enum TemporalAnalyzer {
                      metric: TemporalMetric, cancel: Cancel,
                      progress: @escaping (Double) -> Void) -> TemporalSeries? {
         guard duration > 0, fps > 0 else { return nil }
+
+        // VMAF is stateful and needs consecutive frames — it always runs an
+        // every-frame pass through libvmaf (compiled in only with FRAMEWISE_VMAF).
+        if metric == .vmaf {
+            #if FRAMEWISE_VMAF
+            return VMAFEngine.scan(sourceA: sourceA, sourceB: sourceB,
+                                   duration: duration, fps: fps,
+                                   cancel: cancel, progress: progress)
+            #else
+            return nil
+            #endif
+        }
+
         let total = max(2, Int((duration * fps).rounded()))
         let count = detailed ? total : min(200, total)
 
@@ -245,7 +275,10 @@ struct TemporalStrip: View {
                 RoundedRectangle(cornerRadius: 6).fill(Color.black)
                 RoundedRectangle(cornerRadius: 6).stroke(Theme.border, lineWidth: 1)
 
-                if let s = engine.temporalSeries, s.values.count >= 2 {
+                if engine.temporalMetric == .vmaf && !engine.vmafAvailable {
+                    Text("VMAF not compiled in — rebuild with libvmaf (see README).")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                } else if let s = engine.temporalSeries, s.values.count >= 2 {
                     plot(s, size: size)
                 } else if engine.isScanningTemporal {
                     Text("Scanning…").font(.system(size: 11)).foregroundStyle(Theme.muted)

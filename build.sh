@@ -19,6 +19,19 @@ echo "=== Building ${APP_NAME} ==="
 rm -rf "$BUILD_DIR" "$BUNDLE"
 mkdir -p "$BUILD_DIR"
 
+# ── Optional VMAF (libvmaf) integration ──────────────────────────
+# Off by default. Enable with:
+#   FRAMEWISE_VMAF=1 VMAF_INCLUDE=/opt/homebrew/include VMAF_LIB=/opt/homebrew/lib ./build.sh
+# Requires a libvmaf install (e.g. `brew install libvmaf`, ideally universal).
+# See README → "Building with VMAF".
+VMAF_FLAGS=()
+if [ "${FRAMEWISE_VMAF:-0}" = "1" ]; then
+    echo "VMAF: enabled (linking libvmaf)"
+    VMAF_FLAGS=(-D FRAMEWISE_VMAF -import-objc-header "$SCRIPT_DIR/vmaf-bridge.h" -lvmaf)
+    [ -n "${VMAF_INCLUDE:-}" ] && VMAF_FLAGS+=(-I"$VMAF_INCLUDE")
+    [ -n "${VMAF_LIB:-}" ] && VMAF_FLAGS+=(-L"$VMAF_LIB" -Xlinker -rpath -Xlinker "$VMAF_LIB")
+fi
+
 # ── Compile Swift sources ─────────────────────────────────────────
 echo "Compiling..."
 swiftc \
@@ -36,11 +49,13 @@ swiftc \
     -framework UniformTypeIdentifiers \
     -framework QuartzCore \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+    ${VMAF_FLAGS[@]+"${VMAF_FLAGS[@]}"} \
     FramewiseApp.swift \
     Theme.swift \
     ViewOptions.swift \
     Scopes.swift \
     TemporalAnalyzer.swift \
+    VMAFEngine.swift \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \
