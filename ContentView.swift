@@ -106,6 +106,17 @@ struct ContentView: View {
                     emptyStateView
                 }
 
+                // Blink: center-top badge naming the side currently shown.
+                if engine.blinkActive {
+                    VStack {
+                        blinkBadge.padding(.top, 10)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
+
                 // Pixel hover readout (bottom). Suppress when zoomed in far
                 // enough that the in-shader per-pixel value overlay is on, so
                 // the user never sees both readouts at once.
@@ -203,6 +214,12 @@ struct ContentView: View {
         .onKeyPress("0") { engine.exposure = 0; engine.gamma = 2.2; return .handled }
         // ── Pixel inspection ─────────────────────────────────
         .onKeyPress("p") { engine.pixelInspect.toggle(); return .handled }
+        // ── Blink / channels / loop ──────────────────────────
+        .onKeyPress("b") { engine.blinkSwap(); return .handled }
+        .onKeyPress("c") { engine.cycleChannel(); return .handled }
+        .onKeyPress("i") { engine.setLoopIn(); return .handled }
+        .onKeyPress("o") { engine.setLoopOut(); return .handled }
+        .onKeyPress("l") { engine.toggleLoop(); return .handled }
         // ── Error exploration ────────────────────────────────
         .onKeyPress("x") {
             if engine.hasMediaA && engine.hasMediaB {
@@ -217,6 +234,7 @@ struct ContentView: View {
         .onKeyPress("?") { showHelp.toggle(); return .handled }
         .onKeyPress(.escape) {
             if showHelp { showHelp = false; return .handled }
+            if engine.blinkActive { engine.exitBlink(); return .handled }
             return .ignored
         }
     }
@@ -246,6 +264,28 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 7)
                 .stroke(Theme.border, lineWidth: 1)
         )
+    }
+
+    // MARK: - Blink Badge
+
+    /// Center-top pill naming the side currently shown during blink, colored to
+    /// match that side's identity (A purple, B amber).
+    var blinkBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 11, weight: .bold))
+            Text(engine.blinkShowingA ? "A" : "B")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+            if engine.blinkAuto {
+                Image(systemName: "timer")
+                    .font(.system(size: 10, weight: .bold))
+            }
+        }
+        .foregroundStyle(Theme.bg)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 5)
+        .background(engine.blinkShowingA ? Theme.sideA : Theme.sideB, in: Capsule())
+        .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
     }
 
     // MARK: - Pixel Readout
@@ -407,9 +447,17 @@ struct ContentView: View {
 
                         shortcutSection("Comparison", shortcuts: [
                             ("E", "Toggle Split / Error mode"),
+                            ("B", "Blink \u{2014} swap A\u{2194}B in place (works during playback)"),
                             ("M", "Cycle error metric"),
                             ("F", "Cycle visualization mode"),
                             ("Drag handle", "Move split slider"),
+                        ])
+
+                        shortcutSection("Channels & Playback", shortcuts: [
+                            ("C", "Cycle channel isolation (RGB / R / G / B / A / Luma)"),
+                            ("I  /  O", "Set loop in / out point"),
+                            ("L", "Toggle segment loop"),
+                            ("\u{2318} options", "Clipping & gamut warnings, speed, A/B offset"),
                         ])
 
                         shortcutSection("Exposure & Gamma", shortcuts: [
@@ -589,6 +637,10 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
+
+                if engine.hasMediaA || engine.hasMediaB {
+                    ViewOptionsButton(engine: engine)
+                }
 
                 iconButton("arrow.up.left.and.arrow.down.right") {
                     engine.resetView()

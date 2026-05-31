@@ -50,8 +50,11 @@ struct Uniforms {
     float pwShLnA;
     float pwShB;
     float pwInvScale;
+    int blinkSide;      // -1=off, 0=show A full-frame, 1=show B full-frame
+    int channelMode;    // 0=RGB, 1=R, 2=G, 3=B, 4=A, 5=Luma
+    int clipWarn;       // 0=off, 1=highlight display clip
+    int gamutWarn;      // 0=off, 1=highlight out-of-gamut
     float _pad0;
-    float _pad1;
 };
 
 // ── False color map ──────────────────────────────────────────────────
@@ -381,6 +384,19 @@ float4 renderPixelText(float2 cellPos, float4 values, bool showAlpha,
     return float4(col, 1.0);
 }
 
+// ── Channel isolation ─────────────────────────────────────────────────
+// Maps the displayed color to a single channel (shown as grayscale) or luma.
+float3 isolateChannel(float3 c, float a, int mode) {
+    switch (mode) {
+        case 1: return float3(c.r);
+        case 2: return float3(c.g);
+        case 3: return float3(c.b);
+        case 4: return float3(a);
+        case 5: return float3(dot(c, float3(0.2126, 0.7152, 0.0722)));
+        default: return c;
+    }
+}
+
 // ── Vertex shader ────────────────────────────────────────────────────
 vertex VertexOut vertexMain(uint vid [[vertex_id]],
                             constant Uniforms &u [[buffer(0)]]) {
@@ -455,8 +471,16 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     float4 outColor;
     float4 valuesToShow = float4(0.0, 0.0, 0.0, 1.0);
     bool valuesValid = false;
-    bool isErrorMode = (u.displayMode == 1 && u.hasMediaA != 0 && u.hasMediaB != 0);
+    // Blink overrides everything: show a single side full-frame and flip in
+    // place. Requires both sides loaded; otherwise it's a no-op.
+    bool blink = (u.blinkSide >= 0) && (u.hasMediaA != 0) && (u.hasMediaB != 0);
+    bool isErrorMode = (u.displayMode == 1 && u.hasMediaA != 0 && u.hasMediaB != 0) && !blink;
     bool fragmentOnSideA = false;   // true if split-mode pixel reads from A
+    // Raw (pre-tonemap, extended-range) sampled color of the displayed side,
+    // kept for the out-of-gamut test (which needs the negative values that
+    // tonemapping would clamp away).
+    float3 sourceRaw = float3(0.0);
+    bool haveSource = false;
 
     if (isErrorMode) {
         float4 a = texA.sample(sLinear, tcA);
@@ -468,10 +492,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
         float3 mapped = applyTonemap(err, u);
         outColor = float4(mapped, 1.0);
     } else {
-        float normX = in.position.x / u.viewportSize.x;
-        float4 color;
+        // Which side does this fragment show? Blink picks a fixed side;
+        // otherwise the split slider decides per-column.
+        bool wantA;
+        if (blink) {
+            wantA = (u.blinkSide == 0);
+        } else {
+            wantA = (in.position.x / u.viewportSize.x) < u.sliderPosition;
+        }
 
-        if (normX < u.sliderPosition && u.hasMediaA != 0) {
+        float4 color;
+        if (wantA && u.hasMediaA != 0) {
             color = texA.sample(sLinear, tcA);
             valuesToShow = color;
             valuesValid = true;
@@ -490,11 +521,31 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
             color = float4(0.08, 0.08, 0.08, 1.0);
         }
 
+        sourceRaw = color.rgb;
+        haveSource = valuesValid;
+
         // CIImage outputs sRGB-encoded values. Decode to linear for processing,
         // then apply the selected visualization mode (same pipeline as error mode).
         float3 linear = pow(max(color.rgb, 0.0), float3(2.2));
         color.rgb = applyTonemap(linear, u);
         outColor = color;
+    }
+
+    // ── Channel isolation & clip / gamut warnings ────────────────
+    // Keep the true displayed color so clip detection reads the image, not an
+    // isolated channel.
+    float3 dispColor = outColor.rgb;
+    outColor.rgb = isolateChannel(outColor.rgb, outColor.a, u.channelMode);
+
+    if (u.gamutWarn != 0 && haveSource &&
+        (sourceRaw.r < -0.001 || sourceRaw.g < -0.001 || sourceRaw.b < -0.001)) {
+        outColor.rgb = float3(1.0, 1.0, 0.0);          // out-of-gamut → yellow
+    }
+    if (u.clipWarn != 0) {
+        bool blown = (dispColor.r >= 0.996 && dispColor.g >= 0.996 && dispColor.b >= 0.996);
+        bool crush = (dispColor.r <= 0.004 && dispColor.g <= 0.004 && dispColor.b <= 0.004);
+        if (blown)      outColor.rgb = float3(1.0, 0.0, 1.0);   // blown → magenta
+        else if (crush) outColor.rgb = float3(0.0, 0.4, 1.0);   // crushed → blue
     }
 
     // ── Pixel grid overlay ───────────────────────────────────────

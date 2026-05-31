@@ -38,6 +38,7 @@ swiftc \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     FramewiseApp.swift \
     Theme.swift \
+    ViewOptions.swift \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \

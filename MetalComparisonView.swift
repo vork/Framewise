@@ -46,8 +46,11 @@ struct Uniforms {
     var pwShLnA: Float = 0
     var pwShB: Float = 1
     var pwInvScale: Float = 1.0
+    var blinkSide: Int32 = -1    // -1=off, 0=show A full-frame, 1=show B full-frame
+    var channelMode: Int32 = 0   // 0=RGB, 1=R, 2=G, 3=B, 4=A, 5=Luma
+    var clipWarn: Int32 = 0      // 0=off, 1=highlight display clip (black/white)
+    var gamutWarn: Int32 = 0     // 0=off, 1=highlight out-of-gamut (negative linear)
     var _pad0: Float = 0
-    var _pad1: Float = 0
 }
 
 /// Max analyzer rects we'll pass to the shader in one frame. Anything past
@@ -508,7 +511,7 @@ extension MetalComparisonView {
                                          Float(max(1, engine.mediaSizeB.height))),
                 hasMediaA: engine.hasMediaA ? 1 : 0,
                 hasMediaB: engine.hasMediaB ? 1 : 0,
-                showSlider: (engine.displayMode == .split && engine.hasMediaA && engine.hasMediaB) ? 1 : 0,
+                showSlider: (engine.displayMode == .split && engine.hasMediaA && engine.hasMediaB && !engine.blinkActive) ? 1 : 0,
                 displayMode: Int32(engine.displayMode.rawValue),
                 errorMetric: Int32(engine.errorMetric.rawValue),
                 tonemapMode: Int32(engine.tonemapMode.rawValue),
@@ -538,8 +541,11 @@ extension MetalComparisonView {
                 pwShLnA: engine.piecewiseKnots.shoulderLnA,
                 pwShB: engine.piecewiseKnots.shoulderB,
                 pwInvScale: engine.piecewiseKnots.invScale,
-                _pad0: 0,
-                _pad1: 0
+                blinkSide: engine.blinkActive ? (engine.blinkShowingA ? 0 : 1) : -1,
+                channelMode: Int32(engine.channelMode.rawValue),
+                clipWarn: engine.clipWarning ? 1 : 0,
+                gamutWarn: engine.gamutWarning ? 1 : 0,
+                _pad0: 0
             )
 
             // Render comparison

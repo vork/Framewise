@@ -7,6 +7,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+- **Blink comparison** — press `B` to swap A↔B full-frame in place (the "blink
+  comparator" technique), the fastest way to spot sub-pixel differences. Works
+  during playback. `Esc` or the toolbar exits; an auto-flip mode with an
+  adjustable rate is available in the new viewing-options popover. A center-top
+  badge names the side currently shown.
+- **Channel isolation** — `C` cycles RGB / R / G / B / Alpha / Luma, showing the
+  selected channel as grayscale for inspection.
+- **Clipping & gamut warnings** — optional overlays that flag blown highlights
+  (magenta) and crushed shadows (blue) at the display range, and out-of-gamut
+  pixels (yellow, negative working-space channels). Toggled in the popover.
+- **Playback-speed reduction** — 1× / ½× / ¼× / 0.1× for frame-accurate review
+  of temporal artifacts.
+- **A/B alignment offset** — shift side B by ±N frames to align renders vs.
+  captures (or two encodes) that start a few frames apart.
+- **Segment looping** — set in/out points (`I` / `O`) and loop a segment (`L`)
+  for repeated review of one passage.
+- A consolidated **viewing-options popover** in the toolbar housing the controls
+  above, each section hiding itself when not applicable to the loaded media.
+
 ### Changed
 - Refreshed the visual style, adapting the design language of the sibling
   project [Pixelwise](https://github.com/vork/Pixelwise): a near-black,

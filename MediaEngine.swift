@@ -34,6 +34,53 @@ enum DisplayMode: Int, CaseIterable {
     case error = 1
 }
 
+/// Channel isolation for the displayed image. Applied after tonemapping so the
+/// user inspects exactly what's on screen.
+enum ChannelMode: Int, CaseIterable, Identifiable {
+    case rgb = 0, red = 1, green = 2, blue = 3, alpha = 4, luma = 5
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .rgb:   return "RGB"
+        case .red:   return "Red"
+        case .green: return "Green"
+        case .blue:  return "Blue"
+        case .alpha: return "Alpha"
+        case .luma:  return "Luma"
+        }
+    }
+    /// One-glyph badge for the compact toolbar readout.
+    var short: String {
+        switch self {
+        case .rgb:   return "RGB"
+        case .red:   return "R"
+        case .green: return "G"
+        case .blue:  return "B"
+        case .alpha: return "A"
+        case .luma:  return "L"
+        }
+    }
+}
+
+/// Discrete playback-speed reductions offered in the UI. Slowing playback is
+/// the most reliable way to spot temporal artifacts (judder, flicker, denoiser
+/// instability) frame-to-frame.
+enum PlaybackSpeed: Double, CaseIterable, Identifiable {
+    case full = 1.0
+    case half = 0.5
+    case quarter = 0.25
+    case tenth = 0.1
+    var id: Double { rawValue }
+    var label: String {
+        switch self {
+        case .full:    return "1×"
+        case .half:    return "½×"
+        case .quarter: return "¼×"
+        case .tenth:   return "0.1×"
+        }
+    }
+}
+
 enum ErrorMetric: Int, CaseIterable {
     case error = 0
     case absoluteError = 1
@@ -333,6 +380,134 @@ final class MediaEngine: ObservableObject {
         didSet { UserDefaults.standard.set(pixelInspect, forKey: "pixelInspect") }
     }
 
+    // MARK: - Channel isolation & clipping / gamut warnings
+
+    /// Which channel(s) to display. Purely a view transform — no effect on the
+    /// underlying samples used for hover readouts or analysis.
+    @Published var channelMode: ChannelMode = .rgb
+
+    /// Highlight pixels that hit display black (0) or display white (1) after
+    /// the current exposure / tonemap — the classic "am I clipping on screen"
+    /// overlay. Crushed shadows tint blue, blown highlights tint magenta.
+    @Published var clipWarning: Bool = false
+
+    /// Highlight out-of-display-gamut pixels — any channel that goes negative in
+    /// the working linear space, which is what wide-gamut (P3 / Rec.2020) values
+    /// do when squeezed toward sRGB. Tints yellow.
+    @Published var gamutWarning: Bool = false
+
+    func cycleChannel() {
+        let next = (channelMode.rawValue + 1) % ChannelMode.allCases.count
+        channelMode = ChannelMode(rawValue: next) ?? .rgb
+    }
+
+    // MARK: - Blink comparison
+    //
+    // Shows a single side full-frame and flips A↔B in place — the "blink
+    // comparator". Works during playback: the players keep running, only the
+    // displayed texture changes. Requires both sides loaded.
+    @Published var blinkActive: Bool = false
+    @Published var blinkShowingA: Bool = true
+    @Published var blinkAuto: Bool = false { didSet { updateBlinkTimer() } }
+    /// Auto-flip period (seconds) when `blinkAuto` is on.
+    @Published var blinkInterval: Double = 0.4 { didSet { if blinkAuto { updateBlinkTimer() } } }
+    private var blinkTimer: Timer?
+
+    /// Single-key action (the `B` key): enter blink showing A when off, then
+    /// flip A↔B on each subsequent press.
+    func blinkSwap() {
+        guard hasMediaA && hasMediaB else { return }
+        if blinkActive {
+            blinkShowingA.toggle()
+        } else {
+            blinkActive = true
+            blinkShowingA = true
+        }
+    }
+
+    /// Toolbar toggle: turn blink fully on (showing A) or fully off.
+    func toggleBlink() {
+        guard hasMediaA && hasMediaB else { exitBlink(); return }
+        if blinkActive { exitBlink() } else { blinkActive = true; blinkShowingA = true }
+    }
+
+    func exitBlink() {
+        if blinkAuto { blinkAuto = false }   // stops the timer via didSet
+        blinkActive = false
+    }
+
+    private func updateBlinkTimer() {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        guard blinkAuto, blinkActive else { return }
+        let interval = max(0.05, blinkInterval)
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.blinkActive else { return }
+                self.blinkShowingA.toggle()
+            }
+        }
+    }
+
+    // MARK: - Playback speed & A/B sync offset & segment loop
+
+    /// Playback rate multiplier. Applied live to the AVPlayers when playing.
+    @Published var playbackSpeed: PlaybackSpeed = .full {
+        didSet {
+            guard isPlaying else { return }
+            playerA?.rate = Float(playbackSpeed.rawValue)
+            playerB?.rate = Float(playbackSpeed.rawValue)
+        }
+    }
+
+    /// Frame offset applied to side B relative to side A, to align renders vs.
+    /// captures (or two encodes) that start a few frames apart. Positive shifts
+    /// B later. Re-seeks B immediately when changed while paused.
+    @Published var abOffsetFrames: Int = 0 {
+        didSet { if !isPlaying { applyOffsetSeek() } }
+    }
+
+    /// B's playback offset as a CMTime, derived from B's frame rate.
+    private var abOffsetTime: CMTime {
+        CMTime(seconds: Double(abOffsetFrames) / max(1, frameRateB), preferredTimescale: 9000)
+    }
+
+    /// Target time for B given A's time, clamped to ≥ 0.
+    private func offsetTimeForB(_ base: CMTime) -> CMTime {
+        let t = CMTimeAdd(base, abOffsetTime)
+        return t.seconds < 0 ? .zero : t
+    }
+
+    private func applyOffsetSeek() {
+        guard let pB = playerB else { return }
+        let aTime = playerA?.currentTime() ?? pB.currentTime()
+        pB.seek(to: offsetTimeForB(aTime), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    func nudgeOffset(_ delta: Int) {
+        abOffsetFrames = max(-600, min(600, abOffsetFrames + delta))
+    }
+
+    /// Segment loop (in / out points, in seconds). When enabled, playback wraps
+    /// from `loopEnd` back to `loopStart`.
+    @Published var loopEnabled: Bool = false
+    @Published var loopStart: Double = 0
+    @Published var loopEnd: Double = 0
+
+    /// True when a usable loop region exists (in < out).
+    var hasLoopRegion: Bool { loopEnd > loopStart + 1e-4 }
+
+    func setLoopIn()  { loopStart = currentTime; if loopEnd <= loopStart { loopEnd = duration } }
+    func setLoopOut() { loopEnd = currentTime; if loopStart >= loopEnd { loopStart = 0 } }
+    func clearLoop()  { loopEnabled = false; loopStart = 0; loopEnd = 0 }
+    func toggleLoop() {
+        if loopEnabled { loopEnabled = false }
+        else {
+            if !hasLoopRegion { loopStart = 0; loopEnd = duration }
+            loopEnabled = hasLoopRegion
+        }
+    }
+
     // MARK: - Error exploration (HDR-aware tile analysis)
 
     /// How the on-image highlight overlay renders top-error tiles.
@@ -577,6 +752,7 @@ final class MediaEngine: ObservableObject {
         // Fall back to split if both sides aren't loaded
         if !(hasMediaA && hasMediaB) {
             displayMode = .split
+            exitBlink()   // blink is meaningless without both sides
         }
         setupTimeObserver()
     }
@@ -802,9 +978,15 @@ final class MediaEngine: ObservableObject {
 
     func play() {
         guard hasPlayableVideo else { return }
+        // If a loop is armed and we're sitting at/after the out point, drop back
+        // to the in point so pressing play resumes inside the segment.
+        if loopEnabled && hasLoopRegion && currentTime >= loopEnd - 1e-3 {
+            seek(to: CMTime(seconds: loopStart, preferredTimescale: 9000))
+        }
         syncPlayersNow()
-        playerA?.rate = 1.0
-        playerB?.rate = 1.0
+        let rate = Float(playbackSpeed.rawValue)
+        playerA?.rate = rate
+        playerB?.rate = rate
         isPlaying = true
     }
 
@@ -872,7 +1054,8 @@ final class MediaEngine: ObservableObject {
 
     func seek(to time: CMTime) {
         playerA?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-        playerB?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        // B follows A but shifted by the A/B alignment offset.
+        playerB?.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero)
         updateTimeFromPlayer()
     }
 
@@ -909,7 +1092,7 @@ final class MediaEngine: ObservableObject {
     private func syncPlayersNow() {
         let time = playerA?.currentTime() ?? playerB?.currentTime() ?? .zero
         if let pB = playerB, hasMediaA {
-            pB.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            pB.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero)
         }
         if let pA = playerA, hasMediaB && !hasMediaA {
             pA.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -941,11 +1124,21 @@ final class MediaEngine: ObservableObject {
                     self.seekPosition = time.seconds / self.duration
                 }
 
-                // Re-sync player B if drifted
+                // Segment loop: wrap back to the in point once we cross out.
+                if self.isPlaying, self.loopEnabled, self.hasLoopRegion,
+                   time.seconds >= self.loopEnd - 1e-3 {
+                    self.seek(to: CMTime(seconds: self.loopStart, preferredTimescale: 9000))
+                    let rate = Float(self.playbackSpeed.rawValue)
+                    self.playerA?.rate = rate
+                    self.playerB?.rate = rate
+                }
+
+                // Re-sync player B if it drifts from A's time + the alignment offset.
                 if self.isPlaying, let pA = self.playerA, let pB = self.playerB {
-                    let drift = abs(pA.currentTime().seconds - pB.currentTime().seconds)
+                    let target = self.offsetTimeForB(pA.currentTime())
+                    let drift = abs(target.seconds - pB.currentTime().seconds)
                     if drift > 0.03 { // More than ~1 frame at 30fps
-                        pB.seek(to: pA.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero)
+                        pB.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
                     }
                 }
             }
