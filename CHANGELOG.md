@@ -5,6 +5,24 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Refreshed the visual style, adapting the design language of the sibling
+  project [Pixelwise](https://github.com/vork/Pixelwise): a near-black,
+  faintly-purple canvas (`#0B0B0F`), soft panel surfaces, and a signature
+  purple→amber brand gradient. Primary calls-to-action (the empty-state
+  **Open A/B** buttons and the explorer **Analyze** button) are now filled
+  gradient buttons with a soft brand glow; toolbar and explorer controls use
+  bordered "ghost" buttons whose edges light up purple on hover. The previous
+  yellow active/selected accent (Explore toggle, category chips, tonemap
+  settings, focus outlines, scope icons) is now the purple brand accent, and
+  sliders/segmented pickers inherit it via a global tint. Keyboard-shortcut
+  keycaps in the help overlay, the tonemap response curve, and the various
+  panels (controls bar, explorer, media labels, pixel readout) were restyled
+  to match. A/B side identity stays blue (A) / amber (B) so it never collides
+  with the purple UI accent. All styling is centralised in a new `Theme.swift`.
+
 ## [0.6.2] - 2026-05-26
 
 This is a republish of v0.6.0 + v0.6.1 with a CI fix. The v0.6.0 and v0.6.1

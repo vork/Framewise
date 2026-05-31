@@ -377,7 +377,8 @@ extension MetalComparisonView {
             view.coordinator = self
             view.delegate = self
             view.colorPixelFormat = .rgba16Float
-            view.clearColor = MTLClearColor(red: 0.03, green: 0.03, blue: 0.03, alpha: 1)
+            // Match Theme.bg (#0B0B0F) so letterbox bars blend into the canvas.
+            view.clearColor = MTLClearColor(red: 0.043, green: 0.043, blue: 0.059, alpha: 1)
             view.framebufferOnly = true
             view.preferredFramesPerSecond = 120 // Match ProMotion if available
 

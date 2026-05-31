@@ -83,7 +83,7 @@ struct ContentView: View {
                 VStack {
                     HStack(alignment: .top) {
                         if let name = engine.mediaNameA {
-                            mediaLabel(name, color: .blue) {
+                            mediaLabel(name, color: Theme.sideA) {
                                 engine.unloadMedia(side: .a)
                             }
                             .padding(.leading, 12)
@@ -91,7 +91,7 @@ struct ContentView: View {
                         }
                         Spacer()
                         if let name = engine.mediaNameB {
-                            mediaLabel(name, color: .orange) {
+                            mediaLabel(name, color: Theme.sideB) {
                                 engine.unloadMedia(side: .b)
                             }
                             .padding(.trailing, 12)
@@ -145,7 +145,8 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.18),
                    value: engine.explorerOpen && engine.hasMediaA && engine.hasMediaB)
-        .background(Color.black)
+        .background(Theme.bg)
+        .tint(Theme.accentA)
         .preferredColorScheme(.dark)
         .focusable()
         // Capture our hosting NSWindow so we can detect when WE become key.
@@ -240,7 +241,11 @@ struct ContentView: View {
         .padding(.leading, 10)
         .padding(.trailing, 6)
         .padding(.vertical, 5)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+        .background(Theme.panel.opacity(0.82), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Theme.border, lineWidth: 1)
+        )
     }
 
     // MARK: - Pixel Readout
@@ -272,10 +277,10 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
+        .background(Theme.panel.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
+                .stroke(Theme.border, lineWidth: 1)
         )
     }
 
@@ -343,10 +348,17 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
-                Button("Open A") { openFile(for: .a) }
-                Button("Open B") { openFile(for: .b) }
+                Button { openFile(for: .a) } label: {
+                    Label("Open A", systemImage: "a.square.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                Button { openFile(for: .b) } label: {
+                    Label("Open B", systemImage: "b.square.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BrandButtonStyle())
+            .padding(.top, 4)
         }
     }
 
@@ -435,7 +447,19 @@ struct ContentView: View {
             }
             .frame(width: 420, height: 480)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(color: .black.opacity(0.5), radius: 30)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Theme.border, lineWidth: 1)
+            )
+            .overlay(alignment: .top) {
+                // Brand hairline along the top edge.
+                Theme.brand
+                    .frame(height: 3)
+                    .clipShape(
+                        .rect(topLeadingRadius: 14, topTrailingRadius: 14)
+                    )
+            }
+            .shadow(color: .black.opacity(0.55), radius: 30)
         }
     }
 
@@ -449,10 +473,14 @@ struct ContentView: View {
                 HStack(alignment: .top, spacing: 0) {
                     Text(shortcut.0)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.accentA)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .background(Theme.accentA.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Theme.accentA.opacity(0.25), lineWidth: 1)
+                        )
                         .frame(width: 120, alignment: .trailing)
 
                     Text(shortcut.1)
@@ -499,8 +527,8 @@ struct ContentView: View {
 
             // Transport + controls
             HStack(spacing: 6) {
-                compactButton("Open A", icon: "a.square.fill", color: .blue) { openFile(for: .a) }
-                compactButton("Open B", icon: "b.square.fill", color: .orange) { openFile(for: .b) }
+                compactButton("Open A", icon: "a.square.fill", color: Theme.sideA) { openFile(for: .a) }
+                compactButton("Open B", icon: "b.square.fill", color: Theme.sideB) { openFile(for: .b) }
 
                 Spacer().frame(width: 4)
 
@@ -537,7 +565,11 @@ struct ContentView: View {
                         .frame(width: 55)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                        .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 4))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Theme.border, lineWidth: 1)
+                        )
                         .onSubmit {
                             if let frame = Int(frameInput) {
                                 engine.seekToFrame(frame)
@@ -571,7 +603,12 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
-        .background(Color(white: 0.1))
+        .background(
+            Theme.panelSheen
+                .overlay(alignment: .top) {
+                    Rectangle().fill(Theme.border).frame(height: 1)
+                }
+        )
     }
 
     // MARK: - Error Controls
@@ -618,15 +655,9 @@ struct ContentView: View {
                     Text("Explore")
                 }
                 .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(engine.explorerOpen && canExplore
-                            ? Color.yellow.opacity(0.30)
-                            : Color.white.opacity(0.06),
-                            in: RoundedRectangle(cornerRadius: 5))
-                .foregroundStyle(.white.opacity(canExplore ? 0.9 : 0.4))
+                .foregroundStyle(canExplore ? Theme.text.opacity(0.9) : Theme.muted.opacity(0.6))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GhostButtonStyle(active: engine.explorerOpen && canExplore))
             .disabled(!canExplore)
             .help(canExplore
                   ? "Toggle HDR error exploration (X)"
@@ -715,27 +746,24 @@ struct ContentView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: .medium))
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(Theme.text.opacity(0.82))
                 .frame(width: 28, height: 24)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IconButtonStyle())
     }
 
     func compactButton(_ label: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: icon)
                     .foregroundStyle(color)
                 Text(label)
             }
             .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+            .foregroundStyle(Theme.text.opacity(0.9))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GhostButtonStyle())
     }
 
     // MARK: - File Open

@@ -16,7 +16,7 @@ struct ExplorerPanel: View {
             Divider().opacity(0.2)
             content
         }
-        .background(Color(white: 0.07))
+        .background(Theme.panel)
     }
 
     // MARK: Header — category chips, fraction slider, highlight-style picker.
@@ -24,7 +24,7 @@ struct ExplorerPanel: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "scope")
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Theme.accentA)
                 .font(.system(size: 13))
             Text("Error Exploration")
                 .font(.system(size: 12, weight: .semibold))
@@ -58,14 +58,9 @@ struct ExplorerPanel: View {
                     }
                     Text(engine.analysisResult == nil ? "Analyze" : "Re-analyze")
                 }
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color.accentColor.opacity(0.25),
-                            in: RoundedRectangle(cornerRadius: 5))
-                .foregroundStyle(.white)
+                .font(.system(size: 11, weight: .semibold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BrandButtonStyle())
             .disabled(!engine.hasMediaA || !engine.hasMediaB
                       || engine.isAnalyzing || engine.isPlaying || engine.isScrubbing)
             .help("Run tile-based error analysis on the current frame")
@@ -77,7 +72,8 @@ struct ExplorerPanel: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white.opacity(0.6))
                     .frame(width: 18, height: 18)
-                    .background(.white.opacity(0.08), in: Circle())
+                    .background(Theme.panel2, in: Circle())
+                    .overlay(Circle().stroke(Theme.border, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .help("Close explorer (X)")
@@ -101,15 +97,9 @@ struct ExplorerPanel: View {
                 Text(cat.shortLabel)
                     .font(.system(size: 11, weight: selected ? .semibold : .regular))
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(selected
-                        ? Color.yellow.opacity(0.30)
-                        : Color.white.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 5))
-            .foregroundStyle(selected ? .white : .white.opacity(0.8))
+            .foregroundStyle(selected ? Theme.text : Theme.text.opacity(0.8))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GhostButtonStyle(active: selected))
         .help("\(cat.label): \(cat.detail)")
     }
 
@@ -325,7 +315,7 @@ struct ExplorerPanel: View {
                     Spacer()
                     Image(systemName: cat.icon)
                         .font(.system(size: 9))
-                        .foregroundStyle(.yellow.opacity(0.9))
+                        .foregroundStyle(Theme.accentA.opacity(0.9))
                 }
                 Text(cat.formatScore(region.score(cat)))
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -337,11 +327,14 @@ struct ExplorerPanel: View {
             .frame(width: 84, alignment: .leading)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(Color.white.opacity(isFocused ? 0.14 : 0.06),
-                        in: RoundedRectangle(cornerRadius: 6))
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isFocused ? AnyShapeStyle(Theme.brandSubtle)
+                                    : AnyShapeStyle(Theme.panel2))
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(isFocused ? Color.yellow : Color.white.opacity(0.10),
+                    .stroke(isFocused ? Theme.accentA : Theme.border,
                             lineWidth: isFocused ? 1.5 : 1)
             )
         }

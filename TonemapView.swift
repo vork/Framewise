@@ -78,9 +78,13 @@ struct TonemapSettingsButton: View {
                 .foregroundStyle(.white.opacity(0.85))
                 .frame(width: 22, height: 22)
                 .background(isOpen
-                            ? Color.yellow.opacity(0.30)
-                            : Color.white.opacity(0.06),
+                            ? AnyShapeStyle(Theme.brandSubtle)
+                            : AnyShapeStyle(Theme.panel2),
                             in: RoundedRectangle(cornerRadius: 5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(isOpen ? Theme.accentA.opacity(0.6) : Theme.border, lineWidth: 1)
+                )
         }
         .buttonStyle(.plain)
         .help("Tonemap settings & curve")
@@ -190,7 +194,11 @@ struct TonemapSettingsPopover: View {
                     curve.addLine(to: CGPoint(x: px, y: py))
                 }
             }
-            ctx.stroke(curve, with: .color(.yellow),
+            ctx.stroke(curve,
+                       with: .linearGradient(
+                            Gradient(colors: [Theme.accentA, Theme.accentB]),
+                            startPoint: CGPoint(x: 0, y: size.height),
+                            endPoint: CGPoint(x: size.width, y: 0)),
                        style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
             // Axis labels.

@@ -37,6 +37,7 @@ swiftc \
     -framework QuartzCore \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     FramewiseApp.swift \
+    Theme.swift \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \
