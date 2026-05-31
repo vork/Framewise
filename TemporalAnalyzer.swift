@@ -1,0 +1,323 @@
+import SwiftUI
+import AVFoundation
+import CoreImage
+import CoreGraphics
+
+// MARK: - Model
+
+enum TemporalMetric: Int, CaseIterable, Identifiable {
+    case mae = 0, psnr = 1
+    var id: Int { rawValue }
+    var label: String { self == .mae ? "MAE" : "PSNR" }
+    /// True when a higher value is better (so "events" are the low points).
+    var higherIsBetter: Bool { self == .psnr }
+}
+
+/// What feeds frames for one side of a temporal scan.
+enum TemporalSource {
+    case video(AVAsset, Double)     // asset, fps
+    case sequence([URL], Double)    // frame urls, fps
+    case still(CIImage)
+    case empty
+}
+
+/// Per-frame error curve across the whole timeline.
+struct TemporalSeries {
+    var times: [Double]
+    var values: [Float]
+    var events: [Int]      // indices of the worst frames, worst first
+    var worst: Int?
+    var metric: TemporalMetric
+}
+
+// MARK: - Analyzer
+
+enum TemporalAnalyzer {
+    /// Best-effort cancellation flag shared between the main actor and the scan.
+    final class Cancel { var cancelled = false }
+
+    private static let gridW = 128
+    private static let gridH = 72
+
+    static func scan(sourceA: TemporalSource, sourceB: TemporalSource,
+                     duration: Double, fps: Double, detailed: Bool,
+                     metric: TemporalMetric, cancel: Cancel,
+                     progress: @escaping (Double) -> Void) -> TemporalSeries? {
+        guard duration > 0, fps > 0 else { return nil }
+        let total = max(2, Int((duration * fps).rounded()))
+        let count = detailed ? total : min(200, total)
+
+        let provA = makeProvider(sourceA)
+        let provB = makeProvider(sourceB)
+
+        var times = [Double](); times.reserveCapacity(count)
+        var values = [Float](); values.reserveCapacity(count)
+
+        for i in 0..<count {
+            if cancel.cancelled { return nil }
+            let t = duration * Double(i) / Double(count - 1)
+            guard let ba = provA(t), let bb = provB(t) else { continue }
+            let d = diff(ba, bb)
+            let v: Float = (metric == .psnr)
+                ? (d.mse > 1e-9 ? Float(10.0 * log10(1.0 / Double(d.mse))) : 99.0)
+                : d.mae
+            times.append(t)
+            values.append(v)
+            if i % 8 == 0 { progress(Double(i + 1) / Double(count)) }
+        }
+        guard values.count >= 2 else { return nil }
+        let events = computeEvents(values, metric: metric)
+        return TemporalSeries(times: times, values: values,
+                              events: events, worst: events.first, metric: metric)
+    }
+
+    /// Build a closure that yields the downscaled RGBA8 grid for a side at time t.
+    private static func makeProvider(_ source: TemporalSource) -> (Double) -> [UInt8]? {
+        switch source {
+        case .video(let asset, _):
+            let gen = AVAssetImageGenerator(asset: asset)
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: gridW * 2, height: gridW * 2)
+            gen.requestedTimeToleranceBefore = .zero
+            gen.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
+            return { t in
+                guard let cg = try? gen.copyCGImage(
+                    at: CMTime(seconds: t, preferredTimescale: 600), actualTime: nil)
+                else { return nil }
+                return draw(cg)
+            }
+        case .sequence(let urls, let fps):
+            let ctx = ScopeSampler.context
+            return { t in
+                guard !urls.isEmpty else { return nil }
+                let idx = max(0, min(urls.count - 1, Int((t * fps).rounded())))
+                guard let ci = CIImage(contentsOf: urls[idx]),
+                      let cg = ctx.createCGImage(ci, from: ci.extent) else { return nil }
+                return draw(cg)
+            }
+        case .still(let ci):
+            let ctx = ScopeSampler.context
+            let buf = ctx.createCGImage(ci, from: ci.extent).flatMap { draw($0) }
+            return { _ in buf }   // constant across time
+        case .empty:
+            return { _ in nil }
+        }
+    }
+
+    /// Draw a CGImage into the fixed comparison grid and return its bytes.
+    private static func draw(_ cg: CGImage) -> [UInt8]? {
+        var px = [UInt8](repeating: 0, count: gridW * gridH * 4)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        let ok = px.withUnsafeMutableBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress,
+                  let ctx = CGContext(data: base, width: gridW, height: gridH,
+                                      bitsPerComponent: 8, bytesPerRow: gridW * 4,
+                                      space: cs, bitmapInfo: info) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: gridW, height: gridH))
+            return true
+        }
+        return ok ? px : nil
+    }
+
+    private static func diff(_ a: [UInt8], _ b: [UInt8]) -> (mae: Float, mse: Float) {
+        let n = min(a.count, b.count)
+        guard n > 0 else { return (0, 0) }
+        var sumAbs = 0.0, sumSq = 0.0, cnt = 0
+        var i = 0
+        while i + 3 < n {
+            for c in 0..<3 {                 // RGB only, skip alpha
+                let d = Double(a[i + c]) - Double(b[i + c])
+                sumAbs += abs(d); sumSq += d * d; cnt += 1
+            }
+            i += 4
+        }
+        guard cnt > 0 else { return (0, 0) }
+        return (Float(sumAbs / Double(cnt) / 255.0),
+                Float(sumSq / Double(cnt) / (255.0 * 255.0)))
+    }
+
+    /// Worst frames with non-maximum suppression so events spread across the
+    /// timeline instead of clustering on one spike.
+    private static func computeEvents(_ values: [Float], metric: TemporalMetric) -> [Int] {
+        let badness: [Float] = metric.higherIsBetter ? values.map { -$0 } : values
+        let order = badness.indices.sorted { badness[$0] > badness[$1] }
+        let spacing = max(1, values.count / 24)
+        var picked: [Int] = []
+        for idx in order {
+            if picked.allSatisfy({ abs($0 - idx) >= spacing }) {
+                picked.append(idx)
+                if picked.count >= 6 { break }
+            }
+        }
+        return picked
+    }
+}
+
+// MARK: - Strip UI
+
+struct TemporalStrip: View {
+    @ObservedObject var engine: MediaEngine
+
+    var body: some View {
+        VStack(spacing: 4) {
+            header
+            graph
+                .frame(height: 56)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chart.xyaxis.line")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.accentA)
+            Text("Error over time")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.text)
+
+            Picker("", selection: $engine.temporalMetric) {
+                ForEach(TemporalMetric.allCases) { m in Text(m.label).tag(m) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 120)
+            .onChange(of: engine.temporalMetric) { _ in
+                if !engine.isScanningTemporal { engine.runTemporalScan() }
+            }
+
+            Picker("", selection: $engine.temporalDetailed) {
+                Text("Sampled").tag(false)
+                Text("Every frame").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 150)
+
+            Button {
+                if engine.isScanningTemporal { engine.cancelTemporalScan() }
+                else { engine.runTemporalScan() }
+            } label: {
+                HStack(spacing: 4) {
+                    if engine.isScanningTemporal {
+                        ProgressView().controlSize(.mini)
+                        Text("\(Int(engine.temporalProgress * 100))%")
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                        Text(engine.temporalSeries == nil ? "Scan" : "Rescan")
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(GhostButtonStyle())
+
+            Spacer()
+
+            if let s = engine.temporalSeries, let w = s.worst, w < s.times.count {
+                Button {
+                    engine.seekToPosition(s.times[w] / max(0.0001, engine.duration))
+                } label: {
+                    Text("Worst → \(timeStr(s.times[w]))")
+                        .font(.system(size: 10, design: .monospaced))
+                }
+                .buttonStyle(GhostButtonStyle())
+            }
+
+            Button { engine.temporalOpen = false } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 16, height: 16)
+                    .background(Theme.panel2, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Close temporal graph (T)")
+        }
+    }
+
+    private var graph: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(Color.black)
+                RoundedRectangle(cornerRadius: 6).stroke(Theme.border, lineWidth: 1)
+
+                if let s = engine.temporalSeries, s.values.count >= 2 {
+                    plot(s, size: size)
+                } else if engine.isScanningTemporal {
+                    Text("Scanning…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                } else {
+                    Text("Scan to chart \(engine.temporalMetric.label) per frame")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onEnded { g in
+                let frac = max(0, min(1, g.location.x / max(1, size.width)))
+                engine.seekToPosition(frac)
+            })
+        }
+    }
+
+    @ViewBuilder
+    private func plot(_ s: TemporalSeries, size: CGSize) -> some View {
+        let lo = s.values.min() ?? 0
+        let hi = s.values.max() ?? 1
+        let span = max(1e-5, hi - lo)
+        let inset: CGFloat = 4
+        let w = size.width - inset * 2
+        let h = size.height - inset * 2
+
+        func point(_ i: Int) -> CGPoint {
+            let x = inset + CGFloat(i) / CGFloat(s.values.count - 1) * w
+            // Normalize; for PSNR higher is better so flip so dips read as bad.
+            let norm = CGFloat((s.values[i] - lo) / span)
+            let y = inset + (1 - norm) * h
+            return CGPoint(x: x, y: y)
+        }
+
+        ZStack {
+            Canvas { ctx, _ in
+                var line = Path()
+                for i in 0..<s.values.count {
+                    let p = point(i)
+                    if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+                }
+                var fill = line
+                fill.addLine(to: CGPoint(x: inset + w, y: inset + h))
+                fill.addLine(to: CGPoint(x: inset, y: inset + h))
+                fill.closeSubpath()
+                ctx.fill(fill, with: .linearGradient(
+                    Gradient(colors: [Theme.accentA.opacity(0.35), Theme.accentA.opacity(0.02)]),
+                    startPoint: CGPoint(x: 0, y: inset),
+                    endPoint: CGPoint(x: 0, y: inset + h)))
+                ctx.stroke(line, with: .color(Theme.accentA), lineWidth: 1.5)
+
+                // Worst-error event markers.
+                for e in s.events where e < s.values.count {
+                    let p = point(e)
+                    let r = CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)
+                    ctx.fill(Path(ellipseIn: r), with: .color(Theme.err))
+                }
+
+                // Playhead.
+                if engine.duration > 0 {
+                    let px = inset + CGFloat(engine.currentTime / engine.duration) * w
+                    var ph = Path()
+                    ph.move(to: CGPoint(x: px, y: inset))
+                    ph.addLine(to: CGPoint(x: px, y: inset + h))
+                    ctx.stroke(ph, with: .color(.white.opacity(0.5)), lineWidth: 1)
+                }
+            }
+        }
+    }
+
+    private func timeStr(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let m = Int(s) / 60, sec = Int(s) % 60
+        return String(format: "%d:%02d", m, sec)
+    }
+}

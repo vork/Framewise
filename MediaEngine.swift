@@ -497,6 +497,75 @@ final class MediaEngine: ObservableObject {
 
     func toggleScopes() { scopesOpen.toggle() }
 
+    // MARK: - Temporal error graph
+
+    @Published var temporalOpen: Bool = false {
+        didSet {
+            UserDefaults.standard.set(temporalOpen, forKey: "temporalOpen")
+            if temporalOpen && !oldValue && temporalSeries == nil { runTemporalScan() }
+        }
+    }
+    @Published var temporalDetailed: Bool = false
+    @Published var temporalMetric: TemporalMetric = .mae
+    @Published private(set) var temporalSeries: TemporalSeries?
+    @Published private(set) var isScanningTemporal = false
+    @Published private(set) var temporalProgress: Double = 0
+    private var temporalCancel: TemporalAnalyzer.Cancel?
+
+    func toggleTemporal() { temporalOpen.toggle() }
+
+    func cancelTemporalScan() {
+        temporalCancel?.cancelled = true
+        temporalCancel = nil
+        isScanningTemporal = false
+    }
+
+    /// Scan the timeline computing the chosen metric per (sampled or every)
+    /// frame on a background task. Needs both sides and a timeline.
+    func runTemporalScan() {
+        guard hasMediaA, hasMediaB, hasTimeline, duration > 0, !isScanningTemporal else { return }
+        let sa = temporalSource(.a), sb = temporalSource(.b)
+        let dur = duration, fps = timelineFPS
+        let detailed = temporalDetailed, metric = temporalMetric
+        let cancel = TemporalAnalyzer.Cancel()
+        temporalCancel = cancel
+        isScanningTemporal = true
+        temporalProgress = 0
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let series = TemporalAnalyzer.scan(
+                sourceA: sa, sourceB: sb, duration: dur, fps: fps,
+                detailed: detailed, metric: metric, cancel: cancel,
+                progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+            guard let self else { return }
+            await MainActor.run {
+                // Ignore a result that arrives after a newer scan / cancel.
+                guard self.temporalCancel === cancel else { return }
+                if let series { self.temporalSeries = series }
+                self.isScanningTemporal = false
+                self.temporalProgress = 1
+                self.temporalCancel = nil
+            }
+        }
+    }
+
+    private func temporalSource(_ side: MediaSide) -> TemporalSource {
+        switch side == .a ? mediaKindA : mediaKindB {
+        case .video:
+            if let item = (side == .a ? playerA : playerB)?.currentItem {
+                return .video(item.asset, max(1, side == .a ? frameRateA : frameRateB))
+            }
+            return .empty
+        case .sequence:
+            if let s = side == .a ? sequenceA : sequenceB { return .sequence(s.urls, max(1, s.fps)) }
+            return .empty
+        case .image:
+            if let img = side == .a ? imageA : imageB { return .still(img) }
+            return .empty
+        case .none:
+            return .empty
+        }
+    }
+
     /// Recompute scopes for the current frame. Called by the renderer when a new
     /// frame lands; the in-flight guard naturally throttles during playback so
     /// work never piles up (frames are simply sampled).
@@ -768,6 +837,9 @@ final class MediaEngine: ObservableObject {
         }
         if let v = ScopeMode(rawValue: ud.integer(forKey: "scopeMode")) {
             scopeMode = v
+        }
+        if ud.object(forKey: "temporalOpen") != nil {
+            temporalOpen = ud.bool(forKey: "temporalOpen")
         }
         if ud.object(forKey: "tonemapGamma") != nil {
             gamma = ud.double(forKey: "tonemapGamma")
@@ -1527,10 +1599,15 @@ final class MediaEngine: ObservableObject {
     }
 
     /// Discard the current analysis. Called when media reloads or the user
-    /// closes the explorer panel.
+    /// closes the explorer panel. Also invalidates the scope and temporal
+    /// results, which are keyed to the loaded pair.
     func clearAnalysis() {
         analysisResult = nil
         focusedRegionID = nil
+        scopeDataA = nil
+        scopeDataB = nil
+        if isScanningTemporal { cancelTemporalScan() }
+        temporalSeries = nil
     }
 
     /// Top regions for the active explorer settings.

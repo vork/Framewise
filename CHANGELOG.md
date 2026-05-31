@@ -8,6 +8,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Error-over-time graph** (`T`) — a strip above the scrubber charting the
+  chosen metric (MAE or PSNR) per frame across the whole clip, so you can see
+  *where* a render/encode breaks rather than just a single global number.
+  Worst-error frames are marked as clickable events (and a "Worst →" jump);
+  clicking anywhere on the graph seeks there. Two scan modes: a fast **sampled**
+  pass (~200 points, default) and a **every-frame** detailed pass, run on a
+  background task with progress and cancel.
 - **Scopes** (`S`) — a histogram (RGB overlaid + luma), waveform, and
   vectorscope, shown side-by-side for A and B so two videos/renders can be
   compared at a glance. Computed off the main thread on a downscaled frame and

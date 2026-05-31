@@ -226,6 +226,10 @@ struct ContentView: View {
         .onKeyPress("o") { engine.setLoopOut(); return .handled }
         .onKeyPress("l") { engine.toggleLoop(); return .handled }
         .onKeyPress("s") { engine.toggleScopes(); return .handled }
+        .onKeyPress("t") {
+            if engine.hasMediaA && engine.hasMediaB && engine.hasTimeline { engine.toggleTemporal() }
+            return .handled
+        }
         // ── Error exploration ────────────────────────────────
         .onKeyPress("x") {
             if engine.hasMediaA && engine.hasMediaB {
@@ -462,6 +466,7 @@ struct ContentView: View {
                         shortcutSection("Channels & Playback", shortcuts: [
                             ("C", "Cycle channel isolation (RGB / R / G / B / A / Luma)"),
                             ("S", "Scopes — histogram / waveform / vectorscope"),
+                            ("T", "Error over time — per-frame metric graph"),
                             ("I  /  O", "Set loop in / out point"),
                             ("L", "Toggle segment loop"),
                             ("Options", "Clipping & gamut warnings, speed, A/B offset, seq fps"),
@@ -553,6 +558,12 @@ struct ContentView: View {
 
     var controlsBar: some View {
         VStack(spacing: 0) {
+            // Temporal error graph sits directly above the scrubber.
+            if engine.temporalOpen && engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
+                TemporalStrip(engine: engine)
+                Divider().opacity(0.15)
+            }
+
             // Timeline (shown for videos and image sequences)
             if engine.hasTimeline {
                 HStack(spacing: 10) {
@@ -654,6 +665,17 @@ struct ContentView: View {
                     }
                     .buttonStyle(GhostButtonStyle(active: engine.scopesOpen))
                     .help("Scopes — histogram / waveform / vectorscope (S)")
+
+                    if engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
+                        Button { engine.toggleTemporal() } label: {
+                            Image(systemName: "chart.xyaxis.line")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.text.opacity(0.85))
+                                .frame(width: 24, height: 22)
+                        }
+                        .buttonStyle(GhostButtonStyle(active: engine.temporalOpen))
+                        .help("Error over time — per-frame metric graph (T)")
+                    }
 
                     ViewOptionsButton(engine: engine)
                 }

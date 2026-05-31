@@ -40,6 +40,7 @@ swiftc \
     Theme.swift \
     ViewOptions.swift \
     Scopes.swift \
+    TemporalAnalyzer.swift \
     ShaderSource.swift \
     MediaEngine.swift \
     MetalComparisonView.swift \
