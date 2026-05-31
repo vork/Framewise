@@ -6,7 +6,68 @@ import Metal
 import QuartzCore
 
 enum MediaSide { case a, b }
-enum MediaKind: Int { case video = 0, image = 1 }
+enum MediaKind: Int { case video = 0, image = 1, sequence = 2 }
+
+/// A numbered image sequence loaded onto one side and played back as frames.
+struct ImageSequence: Equatable {
+    var urls: [URL]
+    var fps: Double
+    var index: Int
+}
+
+/// Pure helpers for recognizing image sequences from dropped / opened paths.
+enum SequenceScan {
+    /// Split a filename stem into (prefix, numeric value, suffix, ext) using the
+    /// LAST run of digits in the stem. Returns nil when there's no digit run.
+    private static func parts(_ url: URL) -> (prefix: String, number: Int, suffix: String, ext: String)? {
+        let ext = url.pathExtension.lowercased()
+        let stem = url.deletingPathExtension().lastPathComponent
+        let chars = Array(stem)
+        var i = chars.count - 1
+        while i >= 0 && !chars[i].isNumber { i -= 1 }   // skip trailing suffix
+        guard i >= 0 else { return nil }
+        let runEnd = i + 1
+        while i >= 0 && chars[i].isNumber { i -= 1 }
+        let runStart = i + 1
+        let numStr = String(chars[runStart..<runEnd])
+        guard let n = Int(numStr) else { return nil }
+        return (String(chars[0..<runStart]), n, String(chars[runEnd...]), ext)
+    }
+
+    /// Dominant numbered image sequence within a URL set, sorted by frame number.
+    /// Returns nil unless some pattern group has ≥2 members.
+    static func sequence(from urls: [URL]) -> [URL]? {
+        let images = urls.filter { MediaType.isImage($0) }
+        guard images.count >= 2 else { return nil }
+        var groups: [String: [(Int, URL)]] = [:]
+        for u in images {
+            guard let p = parts(u) else { continue }
+            groups["\(p.prefix)\u{0}\(p.suffix)\u{0}\(p.ext)", default: []].append((p.number, u))
+        }
+        guard let best = groups.values.filter({ $0.count >= 2 }).max(by: { $0.count < $1.count })
+        else { return nil }
+        return best.sorted { $0.0 < $1.0 }.map { $0.1 }
+    }
+
+    /// All images inside a folder (one level) as a sequence — the dominant
+    /// numbered pattern if there is one, otherwise everything natural-sorted.
+    static func sequence(inFolder folder: URL) -> [URL]? {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil) else { return nil }
+        let images = items.filter { MediaType.isImage($0) }
+        guard !images.isEmpty else { return nil }
+        if let seq = sequence(from: images), seq.count >= 2 { return seq }
+        return images.sorted { naturalLess($0.lastPathComponent, $1.lastPathComponent) }
+    }
+
+    static func naturalLess(_ a: String, _ b: String) -> Bool {
+        a.localizedStandardCompare(b) == .orderedAscending
+    }
+
+    static func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+    }
+}
 
 enum MediaType {
     static let imageExtensions: Set<String> = [
@@ -307,10 +368,16 @@ final class MediaEngine: ObservableObject {
     // MARK: - Images
     // For image-mode media, the source CIImage is held here; the renderer
     // re-uploads to the comparison texture whenever `imageVersion*` changes.
+    // Image sequences reuse this exact path — the engine swaps `image*` for the
+    // current frame and bumps the version, so the renderer needs no new logic.
     private(set) var imageA: CIImage?
     private(set) var imageB: CIImage?
     @Published private(set) var imageVersionA: Int = 0
     @Published private(set) var imageVersionB: Int = 0
+
+    // MARK: - Image sequences
+    private(set) var sequenceA: ImageSequence?
+    private(set) var sequenceB: ImageSequence?
 
     // MARK: - Published State
     @Published var isPlaying = false {
@@ -340,9 +407,21 @@ final class MediaEngine: ObservableObject {
     @Published var mediaKindA: MediaKind?
     @Published var mediaKindB: MediaKind?
 
-    /// True when at least one side holds something the transport can drive.
+    /// True when at least one side holds an AVPlayer-backed video.
     var hasPlayableVideo: Bool {
         mediaKindA == .video || mediaKindB == .video
+    }
+    /// True when at least one side is an image sequence.
+    var hasSequence: Bool {
+        mediaKindA == .sequence || mediaKindB == .sequence
+    }
+    /// Anything the transport can drive — videos or image sequences.
+    var hasTimeline: Bool { hasPlayableVideo || hasSequence }
+    /// Frame rate of whichever side owns the timeline (A wins).
+    var timelineFPS: Double {
+        if mediaKindA == .video || mediaKindA == .sequence { return max(1, frameRateA) }
+        if mediaKindB == .video || mediaKindB == .sequence { return max(1, frameRateB) }
+        return 24
     }
 
     // Error visualization (persisted)
@@ -451,12 +530,25 @@ final class MediaEngine: ObservableObject {
 
     // MARK: - Playback speed & A/B sync offset & segment loop
 
-    /// Playback rate multiplier. Applied live to the AVPlayers when playing.
+    /// Playback rate multiplier. Applied live to the AVPlayers when playing;
+    /// the sequence ticker reads it directly.
     @Published var playbackSpeed: PlaybackSpeed = .full {
         didSet {
             guard isPlaying else { return }
             playerA?.rate = Float(playbackSpeed.rawValue)
             playerB?.rate = Float(playbackSpeed.rawValue)
+        }
+    }
+
+    /// Frame rate applied to loaded image sequences. Image files carry no
+    /// timing, so the user picks it; changing it re-times the whole timeline.
+    @Published var sequenceFrameRate: Double = 24 {
+        didSet {
+            let fps = max(1, sequenceFrameRate)
+            if mediaKindA == .sequence { frameRateA = fps; sequenceA?.fps = fps }
+            if mediaKindB == .sequence { frameRateB = fps; sequenceB?.fps = fps }
+            recalculateDuration()
+            refreshSequenceFrames()
         }
     }
 
@@ -722,6 +814,158 @@ final class MediaEngine: ObservableObject {
         loadMedia(url: supported[1], side: .b)
     }
 
+    // MARK: - Sequence-aware loading
+
+    /// Explicit side load (Open A / Open B dialog): a single file is a still, a
+    /// folder or ≥2 files become a sequence on that side.
+    func loadForSide(_ urls: [URL], side: MediaSide) {
+        if urls.count == 1, SequenceScan.isDirectory(urls[0]) {
+            if let seq = SequenceScan.sequence(inFolder: urls[0]) { loadSequence(urls: seq, side: side) }
+            return
+        }
+        let files = urls.filter { MediaType.isSupported($0) }
+        if files.isEmpty { return }
+        if files.count == 1 { loadMedia(url: files[0], side: side); return }
+        let seq = SequenceScan.sequence(from: files)
+            ?? files.filter { MediaType.isImage($0) }
+                    .sorted { SequenceScan.naturalLess($0.lastPathComponent, $1.lastPathComponent) }
+        if seq.count >= 2 { loadSequence(urls: seq, side: side) }
+        else { loadMedia(url: files[0], side: side) }
+    }
+
+    /// Drag-and-drop routing. A folder, or ≥3 files forming a sequence, load as
+    /// a sequence on the drop side. Exactly 2 files keep the A/B pair behavior;
+    /// a single file loads on the drop side.
+    func loadDropped(_ urls: [URL], dropSide: MediaSide) {
+        if let dir = urls.first(where: { SequenceScan.isDirectory($0) }) {
+            if let seq = SequenceScan.sequence(inFolder: dir) { loadSequence(urls: seq, side: dropSide) }
+            return
+        }
+        let files = urls.filter { MediaType.isSupported($0) }
+        guard !files.isEmpty else { return }
+        if files.count >= 3 {
+            let seq = SequenceScan.sequence(from: files)
+                ?? files.filter { MediaType.isImage($0) }
+                        .sorted { SequenceScan.naturalLess($0.lastPathComponent, $1.lastPathComponent) }
+            if seq.count >= 2 { loadSequence(urls: seq, side: dropSide); return }
+        }
+        if files.count == 1 { loadMedia(url: files[0], side: dropSide) }
+        else { loadMediaBatch(urls: files) }
+    }
+
+    /// Load a numbered image sequence onto a side and seat it at frame 0. A
+    /// one-frame "sequence" degrades to a still.
+    func loadSequence(urls: [URL], side: MediaSide) {
+        let frames = urls.filter { MediaType.isImage($0) }
+        guard let first = frames.first else { return }
+        if frames.count == 1 { loadImage(url: first, side: side); return }
+        clearAnalysis()
+        let fps = max(1, sequenceFrameRate)
+        let seq = ImageSequence(urls: frames, fps: fps, index: 0)
+        let name = "\(first.lastPathComponent) … (\(frames.count) frames)"
+        switch side {
+        case .a:
+            playerA?.pause(); playerA = nil; videoOutputA = nil
+            sequenceA = seq
+            hasMediaA = true
+            mediaNameA = name
+            mediaKindA = .sequence
+            frameRateA = fps
+        case .b:
+            playerB?.pause(); playerB = nil; videoOutputB = nil
+            sequenceB = seq
+            hasMediaB = true
+            mediaNameB = name
+            mediaKindB = .sequence
+            frameRateB = fps
+        }
+        loadSequenceFrameImage(first, side: side)   // uploads frame 0 + sets size
+        currentTime = 0
+        recalculateDuration()
+        setupTimeObserver()
+        if hasMediaA && hasMediaB { syncPlayersNow() }
+    }
+
+    /// Decode (lazily) one sequence frame and route it through the image upload
+    /// path. CIImage(contentsOf:) is lazy, so this is cheap — the real decode
+    /// happens in the renderer's CIContext during the draw.
+    private func loadSequenceFrameImage(_ url: URL, side: MediaSide) {
+        let opts: [CIImageOption: Any] = [.expandToHDR: true]
+        guard let raw = CIImage(contentsOf: url, options: opts) ?? CIImage(contentsOf: url) else { return }
+        let exif = (raw.properties[kCGImagePropertyOrientation as String] as? Int32) ?? 1
+        let image = raw.oriented(forExifOrientation: exif)
+        let size = CGSize(width: image.extent.width, height: image.extent.height)
+        switch side {
+        case .a:
+            imageA = image; latestCIImageA = image; imageVersionA &+= 1
+            if size.width > 0, size.height > 0 { mediaSizeA = size }
+        case .b:
+            imageB = image; latestCIImageB = image; imageVersionB &+= 1
+            if size.width > 0, size.height > 0 { mediaSizeB = size }
+        }
+    }
+
+    /// Seat each sequence side on the frame matching the current timeline time.
+    func refreshSequenceFrames() {
+        refreshSequenceSide(.a)
+        refreshSequenceSide(.b)
+    }
+
+    private func refreshSequenceSide(_ side: MediaSide) {
+        guard var s = (side == .a ? sequenceA : sequenceB), !s.urls.isEmpty else { return }
+        let fps = max(1, side == .a ? frameRateA : frameRateB)
+        let idx = max(0, min(s.urls.count - 1, Int((currentTime * fps).rounded())))
+        guard idx != s.index else { return }
+        s.index = idx
+        if side == .a { sequenceA = s } else { sequenceB = s }
+        loadSequenceFrameImage(s.urls[idx], side: side)
+    }
+
+    // ── Sequence playback ticker (used when no AVPlayer video is present) ──
+    private var seqTicker: Timer?
+    private var seqAnchorWall: CFTimeInterval = 0
+    private var seqAnchorTime: Double = 0
+
+    private func startSequenceTicker() {
+        stopSequenceTicker()
+        seqAnchorWall = CACurrentMediaTime()
+        seqAnchorTime = currentTime
+        seqTicker = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sequenceTick() }
+        }
+    }
+
+    private func stopSequenceTicker() {
+        seqTicker?.invalidate()
+        seqTicker = nil
+    }
+
+    private func sequenceTick() {
+        guard isPlaying, !hasPlayableVideo else { return }
+        let now = CACurrentMediaTime()
+        var t = seqAnchorTime + (now - seqAnchorWall) * playbackSpeed.rawValue
+
+        if loopEnabled, hasLoopRegion, t >= loopEnd {
+            t = loopStart
+            seqAnchorWall = now
+            seqAnchorTime = loopStart
+        } else if duration > 0, t >= duration {
+            currentTime = duration
+            updateSeqDerivedState()
+            refreshSequenceFrames()
+            pause()
+            return
+        }
+        currentTime = max(0, t)
+        updateSeqDerivedState()
+        refreshSequenceFrames()
+    }
+
+    private func updateSeqDerivedState() {
+        currentFrame = Int(currentTime * timelineFPS)
+        if !isScrubbing, duration > 0 { seekPosition = currentTime / duration }
+    }
+
     func unloadMedia(side: MediaSide) {
         // Analysis is keyed to the loaded pair; invalidate on any media
         // change so the panel doesn't show stale regions.
@@ -732,6 +976,7 @@ final class MediaEngine: ObservableObject {
             playerA = nil
             videoOutputA = nil
             imageA = nil
+            sequenceA = nil
             latestCIImageA = nil
             hoverSampleA = nil
             hasMediaA = false
@@ -742,6 +987,7 @@ final class MediaEngine: ObservableObject {
             playerB = nil
             videoOutputB = nil
             imageB = nil
+            sequenceB = nil
             latestCIImageB = nil
             hoverSampleB = nil
             hasMediaB = false
@@ -754,6 +1000,7 @@ final class MediaEngine: ObservableObject {
             displayMode = .split
             exitBlink()   // blink is meaningless without both sides
         }
+        if !hasSequence { stopSequenceTicker() }
         setupTimeObserver()
     }
 
@@ -914,7 +1161,7 @@ final class MediaEngine: ObservableObject {
     /// (Refining further would require sniffing the source via CGImageSource.)
     private func kindHasAlpha(_ side: MediaSide) -> Bool {
         switch side == .a ? mediaKindA : mediaKindB {
-        case .image: return true
+        case .image, .sequence: return true
         default: return false
         }
     }
@@ -961,6 +1208,9 @@ final class MediaEngine: ObservableObject {
         if let item = playerB?.currentItem, item.duration.isValid, !item.duration.isIndefinite {
             longest = max(longest, item.duration.seconds)
         }
+        // Sequences contribute frameCount / fps.
+        if let s = sequenceA { longest = max(longest, Double(s.urls.count) / max(1, frameRateA)) }
+        if let s = sequenceB { longest = max(longest, Double(s.urls.count) / max(1, frameRateB)) }
         duration = longest
         if longest == 0 {
             currentTime = 0
@@ -977,7 +1227,7 @@ final class MediaEngine: ObservableObject {
     }
 
     func play() {
-        guard hasPlayableVideo else { return }
+        guard hasTimeline else { return }
         // If a loop is armed and we're sitting at/after the out point, drop back
         // to the in point so pressing play resumes inside the segment.
         if loopEnabled && hasLoopRegion && currentTime >= loopEnd - 1e-3 {
@@ -988,26 +1238,39 @@ final class MediaEngine: ObservableObject {
         playerA?.rate = rate
         playerB?.rate = rate
         isPlaying = true
+        // Sequence-only playback has no AVPlayer clock — drive it ourselves.
+        if !hasPlayableVideo && hasSequence { startSequenceTicker() }
     }
 
     func pause() {
         playerA?.rate = 0
         playerB?.rate = 0
+        stopSequenceTicker()
         isPlaying = false
     }
 
     func stepForward() {
         pause()
-        playerA?.currentItem?.step(byCount: 1)
-        playerB?.currentItem?.step(byCount: 1)
-        updateTimeFromPlayer()
+        if hasPlayableVideo {
+            playerA?.currentItem?.step(byCount: 1)
+            playerB?.currentItem?.step(byCount: 1)
+            updateTimeFromPlayer()
+            refreshSequenceFrames()
+        } else {
+            seek(to: CMTime(seconds: currentTime + 1.0 / timelineFPS, preferredTimescale: 9000))
+        }
     }
 
     func stepBackward() {
         pause()
-        playerA?.currentItem?.step(byCount: -1)
-        playerB?.currentItem?.step(byCount: -1)
-        updateTimeFromPlayer()
+        if hasPlayableVideo {
+            playerA?.currentItem?.step(byCount: -1)
+            playerB?.currentItem?.step(byCount: -1)
+            updateTimeFromPlayer()
+            refreshSequenceFrames()
+        } else {
+            seek(to: CMTime(seconds: max(0, currentTime - 1.0 / timelineFPS), preferredTimescale: 9000))
+        }
     }
 
     func seekToStart() {
@@ -1015,6 +1278,12 @@ final class MediaEngine: ObservableObject {
     }
 
     func seekToEnd() {
+        // Sequence-only: land on the last frame via the unified seek path.
+        if !hasPlayableVideo {
+            let last = max(0, duration - 1.0 / timelineFPS)
+            seek(to: CMTime(seconds: last, preferredTimescale: 9000))
+            return
+        }
         // Seek each player to its own last displayable frame
         func seekPlayerToEnd(_ player: AVPlayer?, fps: Double) {
             guard let player, let item = player.currentItem else { return }
@@ -1029,6 +1298,7 @@ final class MediaEngine: ObservableObject {
         // Defer time update to allow async seeks to land
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.updateTimeFromPlayer()
+            self?.refreshSequenceFrames()
         }
     }
 
@@ -1048,15 +1318,23 @@ final class MediaEngine: ObservableObject {
     }
 
     func seekToFrame(_ frame: Int) {
-        let time = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(frameRateA))
-        seek(to: time)
+        seek(to: CMTime(seconds: Double(frame) / timelineFPS, preferredTimescale: 9000))
     }
 
     func seek(to time: CMTime) {
         playerA?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         // B follows A but shifted by the A/B alignment offset.
         playerB?.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero)
-        updateTimeFromPlayer()
+        if hasPlayableVideo {
+            updateTimeFromPlayer()
+        } else {
+            // Sequence-only: AVPlayer has no clock, so set the time directly.
+            let secs = max(0, time.seconds.isFinite ? time.seconds : 0)
+            currentTime = duration > 0 ? min(duration, secs) : secs
+            updateSeqDerivedState()
+            if isPlaying { seqAnchorWall = CACurrentMediaTime(); seqAnchorTime = currentTime }
+        }
+        refreshSequenceFrames()
     }
 
     // MARK: - Zoom & Pan
@@ -1123,6 +1401,8 @@ final class MediaEngine: ObservableObject {
                 if !self.isScrubbing && self.duration > 0 {
                     self.seekPosition = time.seconds / self.duration
                 }
+                // A sequence paired with a video follows the video's clock.
+                if self.hasSequence { self.refreshSequenceFrames() }
 
                 // Segment loop: wrap back to the in point once we cross out.
                 if self.isPlaying, self.loopEnabled, self.hasLoopRegion,

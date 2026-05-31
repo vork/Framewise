@@ -168,7 +168,8 @@ class ComparisonMTKView: MTKView {
         guard let items = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
         ]) as? [URL] else { return [] }
-        return items.filter { MediaType.isSupported($0) }
+        // Folders are kept too — they may contain an image sequence.
+        return items.filter { MediaType.isSupported($0) || SequenceScan.isDirectory($0) }
     }
 
     private func sideForDrag(_ info: NSDraggingInfo) -> MediaSide {
@@ -197,16 +198,10 @@ class ComparisonMTKView: MTKView {
         let urls = mediaURLs(from: sender)
         guard !urls.isEmpty, let engine else { return false }
 
-        if urls.count == 1 {
-            // Single file: respect drop position (left half → A, right half → B).
-            let side = sideForDrag(sender)
-            Task { @MainActor in engine.loadMedia(url: urls[0], side: side) }
-        } else {
-            // Multi-file drop: load the first two as a comparison pair regardless
-            // of drop position. Drop position no longer carries useful meaning
-            // when both sides will be replaced.
-            Task { @MainActor in engine.loadMediaBatch(urls: urls) }
-        }
+        // The engine decides still vs. A/B pair vs. sequence vs. folder based on
+        // what was dropped; drop position picks the side for single/sequence loads.
+        let side = sideForDrag(sender)
+        Task { @MainActor in engine.loadDropped(urls, dropSide: side) }
         return true
     }
 
@@ -435,7 +430,7 @@ extension MetalComparisonView {
                     newFrameA = true
                 }
                 renderedImageVersionA = -1
-            case .image:
+            case .image, .sequence:
                 if let img = engine.imageA, engine.imageVersionA != renderedImageVersionA {
                     textureA = renderCIImageToTexture(img, existingTexture: textureA, sizeMemo: &textureSizeA, commandBuffer: cb)
                     renderedImageVersionA = engine.imageVersionA
@@ -463,7 +458,7 @@ extension MetalComparisonView {
                     newFrameB = true
                 }
                 renderedImageVersionB = -1
-            case .image:
+            case .image, .sequence:
                 if let img = engine.imageB, engine.imageVersionB != renderedImageVersionB {
                     textureB = renderCIImageToTexture(img, existingTexture: textureB, sizeMemo: &textureSizeB, commandBuffer: cb)
                     renderedImageVersionB = engine.imageVersionB

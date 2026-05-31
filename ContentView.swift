@@ -384,7 +384,7 @@ struct ContentView: View {
             Text("Open or drag-and-drop two videos or images to compare")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("Drop on the left half for A, the right half for B  ·  HDR EXR / HDR HEIC supported")
+            Text("Drop on the left half for A, the right half for B  ·  drop a folder or many frames for a sequence  ·  HDR EXR / HDR HEIC supported")
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
@@ -546,8 +546,8 @@ struct ContentView: View {
 
     var controlsBar: some View {
         VStack(spacing: 0) {
-            // Timeline (only when at least one side is a video)
-            if engine.hasPlayableVideo {
+            // Timeline (shown for videos and image sequences)
+            if engine.hasTimeline {
                 HStack(spacing: 10) {
                     Text(engine.currentTimeString)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -580,7 +580,7 @@ struct ContentView: View {
 
                 Spacer().frame(width: 4)
 
-                if engine.hasPlayableVideo {
+                if engine.hasTimeline {
                     Group {
                         iconButton("backward.end.fill") { engine.seekToStart() }
                         iconButton("backward.frame.fill") { engine.stepBackward() }
@@ -598,7 +598,7 @@ struct ContentView: View {
 
                 Spacer()
 
-                if engine.hasPlayableVideo {
+                if engine.hasTimeline {
                     HStack(spacing: 4) {
                         Text("Frame")
                             .foregroundStyle(.tertiary)
@@ -823,11 +823,15 @@ struct ContentView: View {
     func openFile(for side: MediaSide) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = mediaContentTypes()
-        panel.allowsMultipleSelection = false
-        panel.message = "Select video or image for \(side == .a ? "A (left)" : "B (right)")"
+        // Allow a single file, multiple frames, or a folder. Multiple files or a
+        // folder load as an image sequence on this side.
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.message = "Select a video/image, multiple frames, or a folder for \(side == .a ? "A (left)" : "B (right)")"
         panel.treatsFilePackagesAsDirectories = false
-        if panel.runModal() == .OK, let url = panel.url {
-            engine.loadMedia(url: url, side: side)
+        if panel.runModal() == .OK, !panel.urls.isEmpty {
+            engine.loadForSide(panel.urls, side: side)
         }
     }
 

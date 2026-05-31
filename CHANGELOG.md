@@ -8,6 +8,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- **Image sequence support** — drop a folder or multiple numbered frames (e.g.
+  `render.0001.exr … render.0240.exr`), or pick them from the Open dialog, to
+  load a playable image sequence onto a side. Sequences scrub, step, loop, and
+  play back through the full transport, and pair with a video or another
+  sequence. The playback frame rate is selectable (23.976 / 24 / 25 / 30 / 50 /
+  60) in the viewing-options popover, since image frames carry no timing. A
+  single file still loads as one still image.
 - **Blink comparison** — press `B` to swap A↔B full-frame in place (the "blink
   comparator" technique), the fastest way to spot sub-pixel differences. Works
   during playback. `Esc` or the toolbar exits; an auto-flip mode with an

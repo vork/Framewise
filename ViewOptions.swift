@@ -56,7 +56,11 @@ private struct ViewOptionsPopover: View {
             Divider().opacity(0.4)
             warningsSection
 
-            if engine.hasPlayableVideo {
+            if engine.hasSequence {
+                Divider().opacity(0.4)
+                sequenceSection
+            }
+            if engine.hasTimeline {
                 Divider().opacity(0.4)
                 playbackSection
             }
@@ -64,13 +68,36 @@ private struct ViewOptionsPopover: View {
                 Divider().opacity(0.4)
                 offsetSection
             }
-            if engine.hasPlayableVideo {
+            if engine.hasTimeline {
                 Divider().opacity(0.4)
                 loopSection
             }
         }
         .padding(16)
         .frame(width: 320)
+    }
+
+    // MARK: Sequence frame rate
+
+    private static let fpsPresets: [Double] = [23.976, 24, 25, 30, 50, 60]
+
+    private var sequenceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Sequence frame rate", systemImage: "film.stack")
+            Picker("", selection: $engine.sequenceFrameRate) {
+                ForEach(Self.fpsPresets, id: \.self) { fps in
+                    Text(fpsLabel(fps)).tag(fps)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text("Image sequences carry no timing — pick the playback rate.")
+                .font(.system(size: 10)).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func fpsLabel(_ fps: Double) -> String {
+        fps == fps.rounded() ? String(format: "%.0f", fps) : String(format: "%.2f", fps)
     }
 
     // MARK: Blink
