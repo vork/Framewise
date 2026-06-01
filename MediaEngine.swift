@@ -505,7 +505,7 @@ final class MediaEngine: ObservableObject {
             if temporalOpen && !oldValue && temporalSeries == nil { runTemporalScan() }
         }
     }
-    @Published var temporalDetailed: Bool = false
+    @Published var temporalScanMode: TemporalScanMode = .sampled
     @Published var temporalMetric: TemporalMetric = .mae
     @Published private(set) var temporalSeries: TemporalSeries?
     @Published private(set) var isScanningTemporal = false
@@ -520,25 +520,38 @@ final class MediaEngine: ObservableObject {
         isScanningTemporal = false
     }
 
+    func invalidateTemporalSeries() {
+        cancelTemporalScan()
+        temporalSeries = nil
+    }
+
     /// Scan the timeline computing the chosen metric per (sampled or every)
     /// frame on a background task. Needs both sides and a timeline.
     func runTemporalScan() {
         guard hasMediaA, hasMediaB, hasTimeline, duration > 0, !isScanningTemporal else { return }
         let sa = temporalSource(.a), sb = temporalSource(.b)
         let dur = duration, fps = timelineFPS
-        let detailed = temporalDetailed, metric = temporalMetric
+        let scanMode = temporalScanMode, metric = temporalMetric
+        let existingSeries = temporalSeries
         let cancel = TemporalAnalyzer.Cancel()
         temporalCancel = cancel
         isScanningTemporal = true
         temporalProgress = 0
         Task.detached(priority: .userInitiated) { [weak self] in
-            let series = TemporalAnalyzer.scan(
-                sourceA: sa, sourceB: sb, duration: dur, fps: fps,
-                detailed: detailed, metric: metric, cancel: cancel,
-                progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+            let series: TemporalSeries?
+            if scanMode == .aroundSpikes, let existing = existingSeries {
+                series = TemporalAnalyzer.scanAroundSpikes(
+                    sourceA: sa, sourceB: sb, duration: dur, fps: fps,
+                    metric: metric, baseSeries: existing, cancel: cancel,
+                    progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+            } else {
+                series = TemporalAnalyzer.scan(
+                    sourceA: sa, sourceB: sb, duration: dur, fps: fps,
+                    detailed: scanMode == .everyFrame, metric: metric, cancel: cancel,
+                    progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+            }
             guard let self else { return }
             await MainActor.run {
-                // Ignore a result that arrives after a newer scan / cancel.
                 guard self.temporalCancel === cancel else { return }
                 if let series { self.temporalSeries = series }
                 self.isScanningTemporal = false
@@ -660,9 +673,16 @@ final class MediaEngine: ObservableObject {
 
     /// Frame offset applied to side B relative to side A, to align renders vs.
     /// captures (or two encodes) that start a few frames apart. Positive shifts
-    /// B later. Re-seeks B immediately when changed while paused.
+    /// B later. Re-seeks B immediately when changed while paused; during
+    /// playback, re-syncs B with rate preservation via completion handler.
     @Published var abOffsetFrames: Int = 0 {
-        didSet { if !isPlaying { applyOffsetSeek() } }
+        didSet {
+            if isPlaying {
+                syncPlayersNow(thenPlayRate: Float(playbackSpeed.rawValue))
+            } else {
+                applyOffsetSeek()
+            }
+        }
     }
 
     /// B's playback offset as a CMTime, derived from B's frame rate.
@@ -747,6 +767,9 @@ final class MediaEngine: ObservableObject {
         didSet { UserDefaults.standard.set(highlightStyle.rawValue, forKey: "highlightStyle") }
     }
     @Published private(set) var analysisResult: AnalysisResult?
+    #if FRAMEWISE_VMAF
+    @Published private(set) var frameVMAFScores: FrameVMAFScores?
+    #endif
     @Published private(set) var isAnalyzing: Bool = false
     @Published var focusedRegionID: UUID?
 
@@ -1348,10 +1371,9 @@ final class MediaEngine: ObservableObject {
         if loopEnabled && hasLoopRegion && currentTime >= loopEnd - 1e-3 {
             seek(to: CMTime(seconds: loopStart, preferredTimescale: 9000))
         }
-        syncPlayersNow()
         let rate = Float(playbackSpeed.rawValue)
         playerA?.rate = rate
-        playerB?.rate = rate
+        syncPlayersNow(thenPlayRate: rate)
         isPlaying = true
         // Sequence-only playback has no AVPlayer clock — drive it ourselves.
         if !hasPlayableVideo && hasSequence { startSequenceTicker() }
@@ -1482,10 +1504,17 @@ final class MediaEngine: ObservableObject {
 
     // MARK: - Private
 
-    private func syncPlayersNow() {
+    private func syncPlayersNow(thenPlayRate rate: Float = 0) {
         let time = playerA?.currentTime() ?? playerB?.currentTime() ?? .zero
         if let pB = playerB, hasMediaA {
-            pB.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero)
+            pB.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                guard let self else { return }
+                if rate != 0 {
+                    Task { @MainActor in self.playerB?.rate = rate }
+                }
+            }
+        } else if rate != 0 {
+            playerB?.rate = rate
         }
         if let pA = playerA, hasMediaB && !hasMediaA {
             pA.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -1532,8 +1561,14 @@ final class MediaEngine: ObservableObject {
                 if self.isPlaying, let pA = self.playerA, let pB = self.playerB {
                     let target = self.offsetTimeForB(pA.currentTime())
                     let drift = abs(target.seconds - pB.currentTime().seconds)
-                    if drift > 0.03 { // More than ~1 frame at 30fps
-                        pB.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+                    if drift > 0.03 {
+                        let rate = Float(self.playbackSpeed.rawValue)
+                        pB.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                            guard let self else { return }
+                            Task { @MainActor in
+                                if self.isPlaying { self.playerB?.rate = rate }
+                            }
+                        }
                     }
                 }
             }
@@ -1563,18 +1598,17 @@ final class MediaEngine: ObservableObject {
         let aImage = a, bImage = b
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = ErrorAnalyzer.shared.analyze(a: aImage, b: bImage)
-            // Promote to a strong, immutable binding *before* the @Sendable
-            // MainActor closure so Swift 6 doesn't flag the inner capture of
-            // `var self` from the [weak self] outer scope.
+            #if FRAMEWISE_VMAF
+            let vmafResult = VMAFEngine.analyzeFrame(a: aImage, b: bImage)
+            #endif
             guard let self else { return }
             await MainActor.run {
                 self.analysisResult = result
+                #if FRAMEWISE_VMAF
+                self.frameVMAFScores = vmafResult
+                #endif
                 self.isAnalyzing = false
-                // Drop the previous focused region — its IDs no longer exist
-                // in the freshly-computed regions list.
                 self.focusedRegionID = nil
-                // A frame change landed while we were analyzing the previous
-                // frame; re-run so the surfaced result matches what's on screen.
                 if self.pendingAutoAnalysis {
                     self.pendingAutoAnalysis = false
                     self.triggerAutoAnalysisIfNeeded()

@@ -73,10 +73,12 @@ struct BrandButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 7
 
     func makeBody(configuration: Configuration) -> some View {
-        Body(configuration: configuration, cornerRadius: cornerRadius)
+        BrandBody(configuration: configuration, cornerRadius: cornerRadius)
     }
 
-    private struct Body: View {
+    // Renamed off `Body` so it doesn't collide with `ButtonStyle.Body`'s
+    // associated type, which prevented conformance inference.
+    private struct BrandBody: View {
         let configuration: ButtonStyleConfiguration
         let cornerRadius: CGFloat
         @Environment(\.isEnabled) private var isEnabled
@@ -115,10 +117,10 @@ struct GhostButtonStyle: ButtonStyle {
     var active: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
-        Body(configuration: configuration, cornerRadius: cornerRadius, active: active)
+        GhostBody(configuration: configuration, cornerRadius: cornerRadius, active: active)
     }
 
-    private struct Body: View {
+    private struct GhostBody: View {
         let configuration: ButtonStyleConfiguration
         let cornerRadius: CGFloat
         let active: Bool
@@ -157,10 +159,10 @@ struct IconButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 6
 
     func makeBody(configuration: Configuration) -> some View {
-        Body(configuration: configuration, cornerRadius: cornerRadius)
+        IconBody(configuration: configuration, cornerRadius: cornerRadius)
     }
 
-    private struct Body: View {
+    private struct IconBody: View {
         let configuration: ButtonStyleConfiguration
         let cornerRadius: CGFloat
         @State private var hovering = false

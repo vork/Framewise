@@ -19,6 +19,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
     case denoisingBlur    = 5   // reference holds more high-frequency energy
     case textureLoss      = 6   // 1 − SSIM
     case ringing          = 7   // Laplacian residual at strong edges
+    case banding          = 8   // quantization banding: flat regions that should have gradients
 
     var id: Int { rawValue }
 
@@ -32,6 +33,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
         case .denoisingBlur:  return "Denoising blur"
         case .textureLoss:    return "Texture loss"
         case .ringing:        return "Ringing"
+        case .banding:        return "Banding"
         }
     }
 
@@ -45,6 +47,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
         case .denoisingBlur:  return "Blur"
         case .textureLoss:    return "Texture"
         case .ringing:        return "Ringing"
+        case .banding:        return "Banding"
         }
     }
 
@@ -58,6 +61,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
         case .denoisingBlur:  return "drop.halffull"
         case .textureLoss:    return "circle.dotted"
         case .ringing:        return "waveform"
+        case .banding:        return "rectangle.split.3x1"
         }
     }
 
@@ -71,6 +75,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
         case .denoisingBlur:  return "‖∇A‖ − ‖∇B‖ / ‖∇A‖ (B lost high freq)"
         case .textureLoss:    return "1 − SSIM (8-bit normalized luma)"
         case .ringing:        return "|∇²A − ∇²B| weighted by edge strength in B"
+        case .banding:        return "flat-pixel ratio × luma range (CAMBI-inspired)"
         }
     }
 
@@ -84,7 +89,7 @@ enum ErrorCategory: Int, CaseIterable, Identifiable, Hashable {
             return String(format: "ΔE %.2f", value)
         case .textureLoss:
             return String(format: "%.3f", value)
-        case .fireflies, .denoisingBlur, .ringing:
+        case .fireflies, .denoisingBlur, .ringing, .banding:
             return String(format: "%.2f", value)
         case .highlightBias:
             return String(format: "%.2f", value)
@@ -507,6 +512,14 @@ final class ErrorAnalyzer: @unchecked Sendable {
         var sumLapDiff: Float = 0
         var sumEdgeB: Float = 0
 
+        // Banding detection (CAMBI-inspired): track luma range and count of
+        // near-zero-gradient ("flat") pixels per side.
+        var lumaMinA: Float = .greatestFiniteMagnitude, lumaMaxA: Float = -.greatestFiniteMagnitude
+        var lumaMinB: Float = .greatestFiniteMagnitude, lumaMaxB: Float = -.greatestFiniteMagnitude
+        var flatCountA: Float = 0
+        var flatCountB: Float = 0
+        var gradientSamples: Float = 0
+
         var muA: Float = 0, muB: Float = 0
 
         // Scale-aware (log-domain) and relative accumulators. Log10 with a
@@ -547,6 +560,11 @@ final class ErrorAnalyzer: @unchecked Sendable {
                 let lumB = 0.2126 * bRGB.x + 0.7152 * bRGB.y + 0.0722 * bRGB.z
                 muA += lumA
                 muB += lumB
+
+                if lumA < lumaMinA { lumaMinA = lumA }
+                if lumA > lumaMaxA { lumaMaxA = lumA }
+                if lumB < lumaMinB { lumaMinB = lumB }
+                if lumB > lumaMaxB { lumaMaxB = lumB }
 
                 // Relative-error contribution per pixel. ε prevents shadow
                 // pixels from blowing up the metric.
@@ -626,6 +644,12 @@ final class ErrorAnalyzer: @unchecked Sendable {
                     sumGradA += gA
                     sumGradB += gB
 
+                    // Banding: count pixels with near-zero gradient as "flat".
+                    let bandingEps: Float = 0.005
+                    if gA < bandingEps { flatCountA += 1 }
+                    if gB < bandingEps { flatCountB += 1 }
+                    gradientSamples += 1
+
                     let lapA = lumOf(lA) + lumOf(rA) + lumOf(uA) + lumOf(dA2) - 4 * lumA
                     let lapB = lumOf(lB) + lumOf(rB) + lumOf(uB) + lumOf(dB2) - 4 * lumB
                     let edgeWeight = gB                  // weight ringing by where B has edges
@@ -680,6 +704,21 @@ final class ErrorAnalyzer: @unchecked Sendable {
         let denoisingBlur  = (sumGradA + 1e-6) > 0 ? max(0, (sumGradA - sumGradB)) / (sumGradA + 1e-6) : 0
         let ringing        = sumEdgeB > 0 ? sumLapDiff / sumEdgeB : 0
 
+        // Banding: tiles with a wide luma range but many flat (near-zero gradient)
+        // pixels indicate quantization banding. Score is the flat-pixel ratio
+        // scaled by the luma range so uniform dark/bright tiles don't trigger.
+        // We compare A vs B to surface where A has MORE banding than B.
+        let bandingScore: Float = {
+            guard gradientSamples > 0 else { return 0 }
+            let rangeA = lumaMaxA - lumaMinA
+            let rangeB = lumaMaxB - lumaMinB
+            let flatRatioA = flatCountA / gradientSamples
+            let flatRatioB = flatCountB / gradientSamples
+            let bandA = flatRatioA * rangeA
+            let bandB = flatRatioB * rangeB
+            return max(0, bandA - bandB)
+        }()
+
         var scores = [Float](repeating: 0, count: ErrorCategory.allCases.count)
         scores[ErrorCategory.overall.rawValue]       = meanAbsErr
         scores[ErrorCategory.highlightBias.rawValue] = highlightBias
@@ -689,6 +728,7 @@ final class ErrorAnalyzer: @unchecked Sendable {
         scores[ErrorCategory.denoisingBlur.rawValue] = denoisingBlur
         scores[ErrorCategory.textureLoss.rawValue]   = textureLoss
         scores[ErrorCategory.ringing.rawValue]       = ringing
+        scores[ErrorCategory.banding.rawValue]       = bandingScore
 
         return TileResult(
             scores: scores,

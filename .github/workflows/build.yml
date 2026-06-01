@@ -8,6 +8,11 @@ on:
 
 env:
   APP_NAME: "Framewise"
+  # Pinned libvmaf version. The static archive is built once, cached, and
+  # reused across runs. Bump LIBVMAF_CACHE_REV to force a one-time rebuild
+  # without changing the libvmaf version.
+  LIBVMAF_VERSION: "3.1.0"
+  LIBVMAF_CACHE_REV: "1"
 
 jobs:
   # ════════════════════════════════════════════════════════════════════
@@ -20,10 +25,33 @@ jobs:
         with:
           fetch-depth: 0   # full history + tags so `git describe` works
 
+      # ── libvmaf static lib: restore from cache or build from source ──
+      - name: Restore libvmaf cache
+        id: libvmaf-cache
+        uses: actions/cache@v4
+        with:
+          key: libvmaf-macos-universal-${{ env.LIBVMAF_VERSION }}-r${{ env.LIBVMAF_CACHE_REV }}
+          path: .cache/libvmaf-${{ env.LIBVMAF_VERSION }}/out
+
+      - name: Install libvmaf build tools
+        if: steps.libvmaf-cache.outputs.cache-hit != 'true'
+        run: brew install meson ninja nasm
+
+      - name: Build libvmaf (universal static)
+        if: steps.libvmaf-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-libvmaf.sh
+
+      - name: Verify libvmaf output
+        run: |
+          LIB=".cache/libvmaf-${LIBVMAF_VERSION}/out/lib/libvmaf.a"
+          test -f "$LIB" || { echo "::error::libvmaf static lib missing at $LIB"; exit 1; }
+          lipo -info "$LIB"
+
       # ── Build arm64 ──────────────────────────────────────────────
       - name: Build (arm64)
         run: |
           mkdir -p .build
+          LIBVMAF_OUT=".cache/libvmaf-${LIBVMAF_VERSION}/out"
           swiftc \
             -O \
             -whole-module-optimization \
@@ -39,6 +67,11 @@ jobs:
             -framework UniformTypeIdentifiers \
             -framework QuartzCore \
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+            -D FRAMEWISE_VMAF \
+            -import-objc-header vmaf-bridge.h \
+            -I "${LIBVMAF_OUT}/include" \
+            -Xlinker "${LIBVMAF_OUT}/lib/libvmaf.a" \
+            -Xlinker -lc++ \
             FramewiseApp.swift \
             Theme.swift \
             ViewOptions.swift \
@@ -57,6 +90,7 @@ jobs:
       # ── Build x86_64 ────────────────────────────────────────────
       - name: Build (x86_64)
         run: |
+          LIBVMAF_OUT=".cache/libvmaf-${LIBVMAF_VERSION}/out"
           swiftc \
             -O \
             -whole-module-optimization \
@@ -72,6 +106,11 @@ jobs:
             -framework UniformTypeIdentifiers \
             -framework QuartzCore \
             -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+            -D FRAMEWISE_VMAF \
+            -import-objc-header vmaf-bridge.h \
+            -I "${LIBVMAF_OUT}/include" \
+            -Xlinker "${LIBVMAF_OUT}/lib/libvmaf.a" \
+            -Xlinker -lc++ \
             FramewiseApp.swift \
             Theme.swift \
             ViewOptions.swift \

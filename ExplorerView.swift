@@ -19,64 +19,68 @@ struct ExplorerPanel: View {
         .background(Theme.panel)
     }
 
-    // MARK: Header — category chips, fraction slider, highlight-style picker.
+    // MARK: Header — two-row layout to avoid crowding on narrower windows.
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "scope")
-                .foregroundStyle(Theme.accentA)
-                .font(.system(size: 13))
-            Text("Error Exploration")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
+        VStack(spacing: 4) {
+            // Row 1: title + category chips + close
+            HStack(spacing: 8) {
+                Image(systemName: "scope")
+                    .foregroundStyle(Theme.accentA)
+                    .font(.system(size: 13))
+                Text("Error Exploration")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
 
-            Spacer().frame(width: 8)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(ErrorCategory.allCases) { cat in
-                        categoryChip(cat)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(ErrorCategory.allCases) { cat in
+                            categoryChip(cat)
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
+
+                Button {
+                    engine.explorerOpen = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 18, height: 18)
+                        .background(Theme.panel2, in: Circle())
+                        .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Close explorer (X)")
             }
 
-            Spacer(minLength: 8)
+            // Row 2: Top %, highlight mode, re-analyze
+            HStack(spacing: 10) {
+                topFractionControl
+                highlightStylePicker
 
-            topFractionControl
-            highlightStylePicker
+                Spacer()
 
-            Button {
-                engine.runAnalysis()
-            } label: {
-                HStack(spacing: 4) {
-                    if engine.isAnalyzing {
-                        ProgressView().controlSize(.mini)
-                            .progressViewStyle(.circular)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
+                Button {
+                    engine.runAnalysis()
+                } label: {
+                    HStack(spacing: 4) {
+                        if engine.isAnalyzing {
+                            ProgressView().controlSize(.mini)
+                                .progressViewStyle(.circular)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        Text(engine.analysisResult == nil ? "Analyze" : "Re-analyze")
                     }
-                    Text(engine.analysisResult == nil ? "Analyze" : "Re-analyze")
+                    .font(.system(size: 11, weight: .semibold))
                 }
-                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(BrandButtonStyle())
+                .disabled(!engine.hasMediaA || !engine.hasMediaB
+                          || engine.isAnalyzing || engine.isPlaying || engine.isScrubbing)
+                .help("Run tile-based error analysis on the current frame")
             }
-            .buttonStyle(BrandButtonStyle())
-            .disabled(!engine.hasMediaA || !engine.hasMediaB
-                      || engine.isAnalyzing || engine.isPlaying || engine.isScrubbing)
-            .help("Run tile-based error analysis on the current frame")
-
-            Button {
-                engine.explorerOpen = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: 18, height: 18)
-                    .background(Theme.panel2, in: Circle())
-                    .overlay(Circle().stroke(Theme.border, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .help("Close explorer (X)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -193,6 +197,21 @@ struct ExplorerPanel: View {
                 statCell("Max err",  String(format: "%.3f", stats.maxAbsError))
                 statCell("P99 err",  String(format: "%.3f", stats.p99AbsError),
                          help: "99th-percentile tile-max error (firefly indicator)")
+                #if FRAMEWISE_VMAF
+                if let vs = engine.frameVMAFScores {
+                    cellDivider
+                    statCell("VMAF", String(format: "%.1f", vs.vmaf),
+                             help: "Fused perceptual quality (0–100, higher is better)")
+                    statCell("ADM", String(format: "%.4f", vs.adm),
+                             help: "Detail loss / annoyance — higher means better fidelity")
+                    statCell("VIF", String(format: "%.4f", vs.vif.reduce(0, +) / 4),
+                             help: "Visual Information Fidelity (mean of 4 scales)")
+                    statCell("Motion", String(format: "%.2f", vs.motion),
+                             help: "Temporal complexity — higher means more motion between frames")
+                    statCell("CAMBI", String(format: "%.2f", vs.cambi),
+                             help: "Banding severity (lower is better, 0 = no banding)")
+                }
+                #endif
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)

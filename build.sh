@@ -19,17 +19,29 @@ echo "=== Building ${APP_NAME} ==="
 rm -rf "$BUILD_DIR" "$BUNDLE"
 mkdir -p "$BUILD_DIR"
 
-# ── Optional VMAF (libvmaf) integration ──────────────────────────
-# Off by default. Enable with:
-#   FRAMEWISE_VMAF=1 VMAF_INCLUDE=/opt/homebrew/include VMAF_LIB=/opt/homebrew/lib ./build.sh
-# Requires a libvmaf install (e.g. `brew install libvmaf`, ideally universal).
-# See README → "Building with VMAF".
+# ── VMAF (libvmaf, statically linked) ─────────────────────────────
+# Always built and linked, statically, from source vendored under
+# `.cache/libvmaf-${LIBVMAF_VERSION}/`. Nothing is installed system-wide;
+# nothing extra is bundled at runtime; notarization sees a single binary.
+# Disable with FRAMEWISE_VMAF=0 (e.g. for a faster local rebuild loop).
+LIBVMAF_VERSION="${LIBVMAF_VERSION:-3.1.0}"
 VMAF_FLAGS=()
-if [ "${FRAMEWISE_VMAF:-0}" = "1" ]; then
-    echo "VMAF: enabled (linking libvmaf)"
-    VMAF_FLAGS=(-D FRAMEWISE_VMAF -import-objc-header "$SCRIPT_DIR/vmaf-bridge.h" -lvmaf)
-    [ -n "${VMAF_INCLUDE:-}" ] && VMAF_FLAGS+=(-I"$VMAF_INCLUDE")
-    [ -n "${VMAF_LIB:-}" ] && VMAF_FLAGS+=(-L"$VMAF_LIB" -Xlinker -rpath -Xlinker "$VMAF_LIB")
+if [ "${FRAMEWISE_VMAF:-1}" = "1" ]; then
+    LIBVMAF_OUT="$SCRIPT_DIR/.cache/libvmaf-${LIBVMAF_VERSION}/out"
+    LIBVMAF_LIB="$LIBVMAF_OUT/lib/libvmaf.a"
+    if [ ! -f "$LIBVMAF_LIB" ]; then
+        echo "VMAF: building libvmaf $LIBVMAF_VERSION (one-time, cached)..."
+        LIBVMAF_VERSION="$LIBVMAF_VERSION" "$SCRIPT_DIR/scripts/build-libvmaf.sh"
+    fi
+    echo "VMAF: linking statically against $LIBVMAF_LIB"
+    # libvmaf has C++ pieces (libsvm) — pull in libc++.
+    VMAF_FLAGS=(
+        -D FRAMEWISE_VMAF
+        -import-objc-header "$SCRIPT_DIR/vmaf-bridge.h"
+        -I"$LIBVMAF_OUT/include"
+        -Xlinker "$LIBVMAF_LIB"
+        -Xlinker -lc++
+    )
 fi
 
 # ── Compile Swift sources ─────────────────────────────────────────

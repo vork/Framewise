@@ -26,6 +26,8 @@ struct ScopeData {
     var histL: [Float]
     var waveform: CGImage?
     var vectorscope: CGImage?
+    var waveformWhite: CGImage?
+    var vectorscopeWhite: CGImage?
 }
 
 // MARK: - Sampler
@@ -99,15 +101,20 @@ enum ScopeSampler {
         // visible against dense clusters, then rasterize.
         let waveMax = max(1, wave.max() ?? 1)
         let vecMax  = max(1, vec.max() ?? 1)
-        let waveImg = makeImage(width: w, height: valueBins,
-                                intensity: wave.map { sqrt($0 / waveMax) },
+        let waveNorm = wave.map { sqrt($0 / waveMax) }
+        let vecNorm  = vec.map { sqrt($0 / vecMax) }
+        let waveImg = makeImage(width: w, height: valueBins, intensity: waveNorm,
                                 r: 0.4, g: 1.0, b: 0.55)
-        let vecImg  = makeImage(width: vecN, height: vecN,
-                                intensity: vec.map { sqrt($0 / vecMax) },
+        let vecImg  = makeImage(width: vecN, height: vecN, intensity: vecNorm,
                                 r: 0.55, g: 1.0, b: 0.7)
+        let waveWhite = makeImage(width: w, height: valueBins, intensity: waveNorm,
+                                  r: 1.0, g: 1.0, b: 1.0)
+        let vecWhite  = makeImage(width: vecN, height: vecN, intensity: vecNorm,
+                                  r: 1.0, g: 1.0, b: 1.0)
 
         return ScopeData(histR: norm(hR), histG: norm(hG), histB: norm(hB), histL: norm(hL),
-                         waveform: waveImg, vectorscope: vecImg)
+                         waveform: waveImg, vectorscope: vecImg,
+                         waveformWhite: waveWhite, vectorscopeWhite: vecWhite)
     }
 
     private static func makeImage(width: Int, height: Int, intensity: [Float],
@@ -138,21 +145,54 @@ enum ScopeSampler {
 struct ScopesPanel: View {
     @ObservedObject var engine: MediaEngine
 
+    private var isComparisonMode: Bool {
+        engine.displayMode == .error && engine.hasMediaA && engine.hasMediaB
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.2)
-            HStack(spacing: 10) {
-                scopeColumn("A", color: Theme.sideA, data: engine.scopeDataA,
-                            present: engine.hasMediaA)
-                scopeColumn("B", color: Theme.sideB, data: engine.scopeDataB,
-                            present: engine.hasMediaB)
+            if isComparisonMode {
+                comparisonScope
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            } else {
+                HStack(spacing: 10) {
+                    scopeColumn("A", color: Theme.sideA, data: engine.scopeDataA,
+                                present: engine.hasMediaA)
+                    scopeColumn("B", color: Theme.sideB, data: engine.scopeDataB,
+                                present: engine.hasMediaB)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
-        .frame(height: 196)
+        .frame(height: engine.scopeMode == .vectorscope ? 300 : 220)
         .background(Theme.panel)
+    }
+
+    @ViewBuilder
+    private var comparisonScope: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color.black)
+            RoundedRectangle(cornerRadius: 6).stroke(Theme.border, lineWidth: 1)
+            if let dataA = engine.scopeDataA, let dataB = engine.scopeDataB {
+                switch engine.scopeMode {
+                case .histogram:
+                    ComparisonHistogramView(dataA: dataA, dataB: dataB)
+                        .padding(6)
+                case .waveform:
+                    ComparisonWaveformView(imageA: dataA.waveformWhite, imageB: dataB.waveformWhite)
+                        .padding(6)
+                case .vectorscope:
+                    ComparisonVectorscopeView(imageA: dataA.vectorscopeWhite, imageB: dataB.vectorscopeWhite)
+                        .padding(6)
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
     }
 
     private var header: some View {
@@ -221,16 +261,11 @@ struct ScopesPanel: View {
             HistogramView(data: data)
         case .waveform:
             if let img = data.waveform {
-                Image(decorative: img, scale: 1)
-                    .resizable()
-                    .interpolation(.low)
+                WaveformView(image: img)
             }
         case .vectorscope:
             if let img = data.vectorscope {
-                Image(decorative: img, scale: 1)
-                    .resizable()
-                    .interpolation(.low)
-                    .aspectRatio(1, contentMode: .fit)
+                VectorscopeView(image: img)
             }
         }
     }
@@ -242,26 +277,375 @@ private struct HistogramView: View {
     let data: ScopeData
 
     var body: some View {
-        Canvas { ctx, size in
-            func area(_ h: [Float]) -> Path {
-                var p = Path()
-                guard h.count > 1 else { return p }
-                p.move(to: CGPoint(x: 0, y: size.height))
-                for x in 0..<h.count {
-                    let px = CGFloat(x) / CGFloat(h.count - 1) * size.width
-                    let py = size.height - CGFloat(min(1, h[x])) * size.height
-                    p.addLine(to: CGPoint(x: px, y: py))
+        VStack(spacing: 3) {
+            ZStack {
+                HistogramGrid()
+                Canvas { ctx, size in
+                    func area(_ h: [Float]) -> Path {
+                        var p = Path()
+                        guard h.count > 1 else { return p }
+                        p.move(to: CGPoint(x: 0, y: size.height))
+                        for x in 0..<h.count {
+                            let px = CGFloat(x) / CGFloat(h.count - 1) * size.width
+                            let py = size.height - CGFloat(min(1, h[x])) * size.height
+                            p.addLine(to: CGPoint(x: px, y: py))
+                        }
+                        p.addLine(to: CGPoint(x: size.width, y: size.height))
+                        p.closeSubpath()
+                        return p
+                    }
+                    ctx.blendMode = .screen
+                    ctx.fill(area(data.histR), with: .color(Color(red: 1, green: 0.2, blue: 0.2).opacity(0.7)))
+                    ctx.fill(area(data.histG), with: .color(Color(red: 0.2, green: 1, blue: 0.3).opacity(0.7)))
+                    ctx.fill(area(data.histB), with: .color(Color(red: 0.3, green: 0.5, blue: 1).opacity(0.7)))
+                    ctx.blendMode = .normal
+                    ctx.stroke(area(data.histL), with: .color(.white.opacity(0.35)), lineWidth: 1)
                 }
-                p.addLine(to: CGPoint(x: size.width, y: size.height))
-                p.closeSubpath()
-                return p
             }
-            ctx.blendMode = .screen
-            ctx.fill(area(data.histR), with: .color(Color(red: 1, green: 0.2, blue: 0.2).opacity(0.7)))
-            ctx.fill(area(data.histG), with: .color(Color(red: 0.2, green: 1, blue: 0.3).opacity(0.7)))
-            ctx.fill(area(data.histB), with: .color(Color(red: 0.3, green: 0.5, blue: 1).opacity(0.7)))
-            ctx.blendMode = .normal
-            ctx.stroke(area(data.histL), with: .color(.white.opacity(0.35)), lineWidth: 1)
+            histogramLegend
+        }
+    }
+
+    private var histogramLegend: some View {
+        HStack(spacing: 8) {
+            legendDot(color: Color(red: 1, green: 0.2, blue: 0.2), label: "R")
+            legendDot(color: Color(red: 0.2, green: 1, blue: 0.3), label: "G")
+            legendDot(color: Color(red: 0.3, green: 0.5, blue: 1), label: "B")
+            legendDot(color: .white.opacity(0.5), label: "L", outline: true)
+        }
+        .font(.system(size: 9, weight: .medium, design: .monospaced))
+    }
+
+    private func legendDot(color: Color, label: String, outline: Bool = false) -> some View {
+        HStack(spacing: 2) {
+            if outline {
+                Circle().stroke(color, lineWidth: 1).frame(width: 6, height: 6)
+            } else {
+                Circle().fill(color).frame(width: 6, height: 6)
+            }
+            Text(label).foregroundStyle(Theme.muted)
+        }
+    }
+}
+
+private struct HistogramGrid: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let gc = Color.white.opacity(0.1)
+            let labelColor = Color.white.opacity(0.35)
+            let labelFont = Font.system(size: 7, weight: .medium, design: .monospaced)
+            let vLines: [(CGFloat, String)] = [
+                (0.0, "0"), (0.25, "64"), (0.5, "128"), (0.75, "192"), (1.0, "255")
+            ]
+            for (frac, label) in vLines {
+                let x = frac * size.width
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+                ctx.stroke(path, with: .color(gc), lineWidth: 0.5)
+                ctx.draw(Text(label).font(labelFont).foregroundColor(labelColor),
+                         at: CGPoint(x: x, y: size.height - 4), anchor: .bottom)
+            }
+            for frac in [0.25, 0.5, 0.75] as [CGFloat] {
+                let y = (1 - frac) * size.height
+                var path = Path()
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+                ctx.stroke(path, with: .color(gc), lineWidth: 0.5)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Waveform display with horizontal IRE/code-value reference lines.
+private struct WaveformView: View {
+    let image: CGImage
+
+    var body: some View {
+        ZStack {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(.low)
+            Canvas { ctx, size in
+                let lines: [(CGFloat, String)] = [
+                    (0.0, "255"), (0.25, "192"), (0.5, "128"), (0.75, "64"), (1.0, "0")
+                ]
+                for (frac, label) in lines {
+                    let y = frac * size.height
+                    var path = Path()
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                    ctx.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
+                    ctx.draw(Text(label)
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4)),
+                             at: CGPoint(x: 14, y: y), anchor: .leading)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Vectorscope with graticule overlay: concentric circles at 25/50/75/100%
+/// saturation, color target boxes at standard R/G/B/C/M/Y positions,
+/// and a skin-tone line.
+private struct VectorscopeView: View {
+    let image: CGImage
+
+    var body: some View {
+        ZStack {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(.low)
+                .aspectRatio(1, contentMode: .fit)
+            GeometryReader { proxy in
+                let size = min(proxy.size.width, proxy.size.height)
+                let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                Canvas { ctx, _ in
+                    let graticuleColor = Color.white.opacity(0.2)
+
+                    // Concentric circles at 25%, 50%, 75%, 100% saturation
+                    for pct in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
+                        let r = size / 2 * pct
+                        let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+                        ctx.stroke(Path(ellipseIn: rect), with: .color(graticuleColor), lineWidth: 0.5)
+                    }
+
+                    // Crosshair
+                    var hLine = Path()
+                    hLine.move(to: CGPoint(x: center.x - size / 2, y: center.y))
+                    hLine.addLine(to: CGPoint(x: center.x + size / 2, y: center.y))
+                    ctx.stroke(hLine, with: .color(graticuleColor), lineWidth: 0.5)
+                    var vLine = Path()
+                    vLine.move(to: CGPoint(x: center.x, y: center.y - size / 2))
+                    vLine.addLine(to: CGPoint(x: center.x, y: center.y + size / 2))
+                    ctx.stroke(vLine, with: .color(graticuleColor), lineWidth: 0.5)
+
+                    // Skin tone line (~123 degrees in Cb/Cr space, roughly from center toward upper-left)
+                    let skinAngle: CGFloat = 123 * .pi / 180
+                    let skinEnd = CGPoint(
+                        x: center.x + cos(skinAngle) * size / 2,
+                        y: center.y - sin(skinAngle) * size / 2)
+                    var skinLine = Path()
+                    skinLine.move(to: center)
+                    skinLine.addLine(to: skinEnd)
+                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.35)), lineWidth: 1)
+
+                    // Color target boxes at 75% saturation (BT.709 Cb/Cr)
+                    // Pure color Cb/Cr from the BT.709 formula:
+                    //   R(1,0,0): cb=-0.169, cr= 0.500
+                    //   G(0,1,0): cb=-0.331, cr=-0.419
+                    //   B(0,0,1): cb= 0.500, cr=-0.081
+                    //   C(0,1,1): cb= 0.169, cr=-0.500
+                    //   M(1,0,1): cb= 0.331, cr= 0.419
+                    //   Y(1,1,0): cb=-0.500, cr= 0.081
+                    let targets: [(String, CGFloat, CGFloat, Color)] = [
+                        ("R", -0.169,  0.500, Color.red),
+                        ("G", -0.331, -0.419, Color.green),
+                        ("B",  0.500, -0.081, Color.blue),
+                        ("C",  0.169, -0.500, Color.cyan),
+                        ("M",  0.331,  0.419, Color(red: 1, green: 0, blue: 1)),
+                        ("Y", -0.500,  0.081, Color.yellow),
+                    ]
+                    let targetScale: CGFloat = 0.75
+                    for (label, cb, cr, color) in targets {
+                        let x = center.x + cb * targetScale * size
+                        let y = center.y - cr * targetScale * size
+                        let boxSize: CGFloat = 8
+                        let rect = CGRect(x: x - boxSize / 2, y: y - boxSize / 2,
+                                          width: boxSize, height: boxSize)
+                        ctx.stroke(Path(rect), with: .color(color.opacity(0.6)), lineWidth: 1)
+                        ctx.draw(Text(label)
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(color.opacity(0.5)),
+                                 at: CGPoint(x: x, y: y - boxSize / 2 - 5), anchor: .center)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .aspectRatio(1, contentMode: .fit)
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+}
+
+/// Overlaid A/B waveform — both sides tinted and composited with screen blend
+/// so differences in luma distribution are immediately visible.
+private struct ComparisonWaveformView: View {
+    let imageA: CGImage?
+    let imageB: CGImage?
+
+    var body: some View {
+        ZStack {
+            if let imgA = imageA {
+                Image(decorative: imgA, scale: 1)
+                    .resizable().interpolation(.low)
+                    .colorMultiply(Color(red: 0.2, green: 0.6, blue: 1.0))
+                    .blendMode(.plusLighter)
+            }
+            if let imgB = imageB {
+                Image(decorative: imgB, scale: 1)
+                    .resizable().interpolation(.low)
+                    .colorMultiply(Color(red: 1.0, green: 0.4, blue: 0.15))
+                    .blendMode(.plusLighter)
+            }
+            // Waveform graticule lines
+            Canvas { ctx, size in
+                let lines: [(CGFloat, String)] = [
+                    (0.0, "255"), (0.25, "192"), (0.5, "128"), (0.75, "64"), (1.0, "0")
+                ]
+                for (frac, label) in lines {
+                    let y = frac * size.height
+                    var path = Path()
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                    ctx.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
+                    ctx.draw(Text(label)
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4)),
+                             at: CGPoint(x: 14, y: y), anchor: .leading)
+                }
+            }
+            .allowsHitTesting(false)
+            ComparisonLegend()
+        }
+    }
+}
+
+private let comparisonColorA = Color(red: 0.2, green: 0.6, blue: 1.0)
+private let comparisonColorB = Color(red: 1.0, green: 0.4, blue: 0.15)
+
+private struct ComparisonLegend: View {
+    var body: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 12) {
+                HStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 2).fill(comparisonColorA)
+                        .frame(width: 10, height: 6)
+                    Text("A").font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                }
+                HStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 2).fill(comparisonColorB)
+                        .frame(width: 10, height: 6)
+                    Text("B").font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                }
+                Spacer()
+            }
+            .padding(.leading, 4).padding(.bottom, 2)
+        }
+    }
+}
+
+/// Overlaid A/B vectorscope — both sides tinted and composited with screen blend,
+/// plus graticule overlay for spatial reference.
+private struct ComparisonVectorscopeView: View {
+    let imageA: CGImage?
+    let imageB: CGImage?
+
+    var body: some View {
+        ZStack {
+            ZStack {
+                if let imgA = imageA {
+                    Image(decorative: imgA, scale: 1)
+                        .resizable().interpolation(.low)
+                        .colorMultiply(Color(red: 0.2, green: 0.6, blue: 1.0))
+                        .blendMode(.plusLighter)
+                }
+                if let imgB = imageB {
+                    Image(decorative: imgB, scale: 1)
+                        .resizable().interpolation(.low)
+                        .colorMultiply(Color(red: 1.0, green: 0.4, blue: 0.15))
+                        .blendMode(.plusLighter)
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            // Reuse the same graticule overlay
+            GeometryReader { proxy in
+                let size = min(proxy.size.width, proxy.size.height)
+                let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                Canvas { ctx, _ in
+                    let gc = Color.white.opacity(0.2)
+                    for pct in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
+                        let r = size / 2 * pct
+                        let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+                        ctx.stroke(Path(ellipseIn: rect), with: .color(gc), lineWidth: 0.5)
+                    }
+                    var hLine = Path()
+                    hLine.move(to: CGPoint(x: center.x - size / 2, y: center.y))
+                    hLine.addLine(to: CGPoint(x: center.x + size / 2, y: center.y))
+                    ctx.stroke(hLine, with: .color(gc), lineWidth: 0.5)
+                    var vLine = Path()
+                    vLine.move(to: CGPoint(x: center.x, y: center.y - size / 2))
+                    vLine.addLine(to: CGPoint(x: center.x, y: center.y + size / 2))
+                    ctx.stroke(vLine, with: .color(gc), lineWidth: 0.5)
+
+                    let skinAngle: CGFloat = 123 * .pi / 180
+                    let skinEnd = CGPoint(
+                        x: center.x + cos(skinAngle) * size / 2,
+                        y: center.y - sin(skinAngle) * size / 2)
+                    var skinLine = Path()
+                    skinLine.move(to: center)
+                    skinLine.addLine(to: skinEnd)
+                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.35)), lineWidth: 1)
+                }
+                .allowsHitTesting(false)
+            }
+            .aspectRatio(1, contentMode: .fit)
+            ComparisonLegend()
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+}
+
+/// Overlaid A/B histogram for comparison mode — both sides' luma histograms
+/// in distinct colors so distribution differences are immediately visible.
+private struct ComparisonHistogramView: View {
+    let dataA: ScopeData
+    let dataB: ScopeData
+
+    var body: some View {
+        VStack(spacing: 3) {
+            ZStack {
+                HistogramGrid()
+                Canvas { ctx, size in
+                    func area(_ h: [Float]) -> Path {
+                        var p = Path()
+                        guard h.count > 1 else { return p }
+                        p.move(to: CGPoint(x: 0, y: size.height))
+                        for x in 0..<h.count {
+                            let px = CGFloat(x) / CGFloat(h.count - 1) * size.width
+                            let py = size.height - CGFloat(min(1, h[x])) * size.height
+                            p.addLine(to: CGPoint(x: px, y: py))
+                        }
+                        p.addLine(to: CGPoint(x: size.width, y: size.height))
+                        p.closeSubpath()
+                        return p
+                    }
+                    ctx.fill(area(dataA.histL), with: .color(Theme.sideA.opacity(0.4)))
+                    ctx.stroke(area(dataA.histL), with: .color(Theme.sideA.opacity(0.8)), lineWidth: 1.5)
+                    ctx.fill(area(dataB.histL), with: .color(Theme.sideB.opacity(0.3)))
+                    ctx.stroke(area(dataB.histL), with: .color(Theme.sideB.opacity(0.8)), lineWidth: 1.5)
+                }
+            }
+            HStack(spacing: 12) {
+                HStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 2).fill(Theme.sideA).frame(width: 10, height: 6)
+                    Text("A").font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                }
+                HStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 2).fill(Theme.sideB).frame(width: 10, height: 6)
+                    Text("B").font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                }
+                Spacer()
+                Text("Luma").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
+            }
         }
     }
 }

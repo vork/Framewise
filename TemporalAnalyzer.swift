@@ -7,16 +7,35 @@ import CoreGraphics
 
 enum TemporalMetric: Int, CaseIterable, Identifiable {
     case mae = 0, psnr = 1, vmaf = 2
+    case vif = 3, adm = 4, motion = 5, cambi = 6
     var id: Int { rawValue }
     var label: String {
         switch self {
-        case .mae:  return "MAE"
-        case .psnr: return "PSNR"
-        case .vmaf: return "VMAF"
+        case .mae:    return "MAE"
+        case .psnr:   return "PSNR"
+        case .vmaf:   return "VMAF"
+        case .vif:    return "VIF"
+        case .adm:    return "ADM"
+        case .motion: return "Motion"
+        case .cambi:  return "CAMBI"
         }
     }
     /// True when a higher value is better (so "events" are the low points).
-    var higherIsBetter: Bool { self != .mae }
+    var higherIsBetter: Bool {
+        switch self {
+        case .mae, .cambi: return false
+        case .psnr, .vmaf, .vif, .adm, .motion: return true
+        }
+    }
+    /// Whether this metric requires the VMAF/libvmaf pipeline.
+    var requiresVMAF: Bool { rawValue >= 2 }
+}
+
+enum TemporalScanMode: Int, CaseIterable, Identifiable {
+    case sampled = 0
+    case aroundSpikes = 1
+    case everyFrame = 2
+    var id: Int { rawValue }
 }
 
 extension MediaEngine {
@@ -62,12 +81,12 @@ enum TemporalAnalyzer {
                      progress: @escaping (Double) -> Void) -> TemporalSeries? {
         guard duration > 0, fps > 0 else { return nil }
 
-        // VMAF is stateful and needs consecutive frames — it always runs an
-        // every-frame pass through libvmaf (compiled in only with FRAMEWISE_VMAF).
-        if metric == .vmaf {
+        // VMAF-based metrics need the libvmaf pipeline (stateful, consecutive frames).
+        if metric.requiresVMAF {
             #if FRAMEWISE_VMAF
             return VMAFEngine.scan(sourceA: sourceA, sourceB: sourceB,
                                    duration: duration, fps: fps,
+                                   metric: metric,
                                    cancel: cancel, progress: progress)
             #else
             return nil
@@ -75,7 +94,10 @@ enum TemporalAnalyzer {
         }
 
         let total = max(2, Int((duration * fps).rounded()))
-        let count = detailed ? total : min(200, total)
+        // Scale sample count with duration: ~4 samples/sec for short clips,
+        // tapering to ~2/sec for long ones. Floor 60, cap at 600.
+        let sampledCount = detailed ? total : min(total, max(60, min(600, Int(duration * 3.0))))
+        let count = sampledCount
 
         let provA = makeProvider(sourceA)
         let provB = makeProvider(sourceB)
@@ -94,6 +116,66 @@ enum TemporalAnalyzer {
             times.append(t)
             values.append(v)
             if i % 8 == 0 { progress(Double(i + 1) / Double(count)) }
+        }
+        guard values.count >= 2 else { return nil }
+        let events = computeEvents(values, metric: metric)
+        return TemporalSeries(times: times, values: values,
+                              events: events, worst: events.first, metric: metric)
+    }
+
+    /// Dense scan around spikes from a previous (sampled) series. Densely
+    /// samples +/- 2 seconds around each event, merged with the original
+    /// coarse samples to give a high-resolution view near problem areas
+    /// without scanning the entire video.
+    static func scanAroundSpikes(sourceA: TemporalSource, sourceB: TemporalSource,
+                                 duration: Double, fps: Double,
+                                 metric: TemporalMetric, baseSeries: TemporalSeries,
+                                 cancel: Cancel,
+                                 progress: @escaping (Double) -> Void) -> TemporalSeries? {
+        guard duration > 0, fps > 0 else { return nil }
+
+        if metric.requiresVMAF {
+            #if FRAMEWISE_VMAF
+            return VMAFEngine.scan(sourceA: sourceA, sourceB: sourceB,
+                                   duration: duration, fps: fps,
+                                   metric: metric, cancel: cancel, progress: progress)
+            #else
+            return nil
+            #endif
+        }
+
+        let provA = makeProvider(sourceA)
+        let provB = makeProvider(sourceB)
+
+        // Collect times to sample: base series + dense around each event.
+        var sampleTimes = Set(baseSeries.times)
+        let radius = 2.0  // seconds around each spike
+        let denseStep = 1.0 / fps  // every frame within the radius
+        for e in baseSeries.events where e < baseSeries.times.count {
+            let center = baseSeries.times[e]
+            let lo = max(0, center - radius)
+            let hi = min(duration, center + radius)
+            var t = lo
+            while t <= hi {
+                sampleTimes.insert(t)
+                t += denseStep
+            }
+        }
+
+        let sortedTimes = sampleTimes.sorted()
+        var times = [Double](); times.reserveCapacity(sortedTimes.count)
+        var values = [Float](); values.reserveCapacity(sortedTimes.count)
+
+        for (i, t) in sortedTimes.enumerated() {
+            if cancel.cancelled { return nil }
+            guard let ba = provA(t), let bb = provB(t) else { continue }
+            let d = diff(ba, bb)
+            let v: Float = (metric == .psnr)
+                ? (d.mse > 1e-9 ? Float(10.0 * log10(1.0 / Double(d.mse))) : 99.0)
+                : d.mae
+            times.append(t)
+            values.append(v)
+            if i % 8 == 0 { progress(Double(i + 1) / Double(sortedTimes.count)) }
         }
         guard values.count >= 2 else { return nil }
         let events = computeEvents(values, metric: metric)
@@ -169,7 +251,7 @@ enum TemporalAnalyzer {
 
     /// Worst frames with non-maximum suppression so events spread across the
     /// timeline instead of clustering on one spike.
-    private static func computeEvents(_ values: [Float], metric: TemporalMetric) -> [Int] {
+    static func computeEvents(_ values: [Float], metric: TemporalMetric) -> [Int] {
         let badness: [Float] = metric.higherIsBetter ? values.map { -$0 } : values
         let order = badness.indices.sorted { badness[$0] > badness[$1] }
         let spacing = max(1, values.count / 24)
@@ -193,11 +275,12 @@ struct TemporalStrip: View {
         VStack(spacing: 4) {
             header
             graph
-                .frame(height: 56)
+                .frame(height: 90)
         }
         .padding(.horizontal, 12)
         .padding(.top, 6)
-        .padding(.bottom, 2)
+        .padding(.bottom, 4)
+        .background(Theme.panel)
     }
 
     private var header: some View {
@@ -209,23 +292,25 @@ struct TemporalStrip: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.text)
 
-            Picker("", selection: $engine.temporalMetric) {
-                ForEach(TemporalMetric.allCases) { m in Text(m.label).tag(m) }
+            Picker("Metric", selection: $engine.temporalMetric) {
+                ForEach(TemporalMetric.allCases.filter { !$0.requiresVMAF || engine.vmafAvailable }) { m in
+                    Text(m.label).tag(m)
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 120)
-            .onChange(of: engine.temporalMetric) { _ in
-                if !engine.isScanningTemporal { engine.runTemporalScan() }
+            .frame(width: 110)
+            .onChange(of: engine.temporalMetric) {
+                engine.invalidateTemporalSeries()
+                engine.runTemporalScan()
             }
 
-            Picker("", selection: $engine.temporalDetailed) {
-                Text("Sampled").tag(false)
-                Text("Every frame").tag(true)
+            Picker("", selection: $engine.temporalScanMode) {
+                Text("Sampled").tag(TemporalScanMode.sampled)
+                Text("Around spikes").tag(TemporalScanMode.aroundSpikes)
+                Text("Every frame").tag(TemporalScanMode.everyFrame)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 150)
+            .frame(width: 220)
 
             Button {
                 if engine.isScanningTemporal { engine.cancelTemporalScan() }
@@ -275,7 +360,7 @@ struct TemporalStrip: View {
                 RoundedRectangle(cornerRadius: 6).fill(Color.black)
                 RoundedRectangle(cornerRadius: 6).stroke(Theme.border, lineWidth: 1)
 
-                if engine.temporalMetric == .vmaf && !engine.vmafAvailable {
+                if engine.temporalMetric.requiresVMAF && !engine.vmafAvailable {
                     Text("VMAF not compiled in — rebuild with libvmaf (see README).")
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 } else if let s = engine.temporalSeries, s.values.count >= 2 {
@@ -288,15 +373,37 @@ struct TemporalStrip: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onEnded { g in
-                let frac = max(0, min(1, g.location.x / max(1, size.width)))
-                engine.seekToPosition(frac)
-            })
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    let inset: CGFloat = 4
+                    let frac = max(0, min(1, (g.location.x - inset) / max(1, size.width - inset * 2)))
+                    engine.seekToPosition(frac)
+                }
+                .onEnded { g in
+                    let inset: CGFloat = 4
+                    let w = size.width - inset * 2
+                    // Snap to nearest event dot if within 10pt
+                    if let s = engine.temporalSeries, s.values.count >= 2, engine.duration > 0 {
+                        for e in s.events where e < s.times.count {
+                            let dotX = inset + CGFloat(e) / CGFloat(s.values.count - 1) * w
+                            if abs(g.location.x - dotX) < 10 {
+                                engine.seekToPosition(s.times[e] / max(0.0001, engine.duration))
+                                return
+                            }
+                        }
+                    }
+                    let frac = max(0, min(1, (g.location.x - inset) / max(1, w)))
+                    engine.seekToPosition(frac)
+                }
+            )
         }
     }
 
-    @ViewBuilder
     private func plot(_ s: TemporalSeries, size: CGSize) -> some View {
+        // Plain func (no @ViewBuilder) so the nested `point` helper's `return`
+        // doesn't get attributed to the result builder context — that pattern
+        // confused the compiler into reporting the body as having no return
+        // statements at all.
         let lo = s.values.min() ?? 0
         let hi = s.values.max() ?? 1
         let span = max(1e-5, hi - lo)
@@ -312,7 +419,7 @@ struct TemporalStrip: View {
             return CGPoint(x: x, y: y)
         }
 
-        ZStack {
+        return ZStack {
             Canvas { ctx, _ in
                 var line = Path()
                 for i in 0..<s.values.count {

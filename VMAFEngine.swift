@@ -17,18 +17,91 @@ import AVFoundation
 import CoreImage
 import CoreGraphics
 
+struct FrameVMAFScores {
+    var vmaf: Float
+    var adm: Float
+    var vif: [Float]    // 4 scales
+    var motion: Float
+    var cambi: Float
+}
+
 enum VMAFEngine {
     /// Built-in model version string (libvmaf ships these compiled in).
     private static let modelVersion = "vmaf_v0.6.1"
     private static let maxWidth = 1920
 
+    /// Single-frame VMAF analysis: returns the fused VMAF score plus sub-metrics.
+    static func analyzeFrame(a: CIImage, b: CIImage) -> FrameVMAFScores? {
+        let maxDim = 960
+        let aw = Int(a.extent.width), ah = Int(a.extent.height)
+        let scale = min(1.0, Double(maxDim) / Double(max(aw, ah)))
+        var w = Int(Double(aw) * scale); var h = Int(Double(ah) * scale)
+        w &= ~1; h &= ~1
+        guard w >= 2, h >= 2 else { return nil }
+
+        let cictx = ScopeSampler.context
+        guard let cgA = cictx.createCGImage(a, from: a.extent),
+              let cgB = cictx.createCGImage(b, from: b.extent),
+              let rgbaA = draw(cgA, w, h),
+              let rgbaB = draw(cgB, w, h) else { return nil }
+
+        var vmaf: OpaquePointer?
+        var cfg = VmafConfiguration()
+        cfg.log_level = VMAF_LOG_LEVEL_NONE
+        cfg.n_threads = UInt32(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
+        guard vmaf_init(&vmaf, cfg) == 0, let ctx = vmaf else { return nil }
+        defer { vmaf_close(ctx) }
+
+        var model: OpaquePointer?
+        var mcfg = VmafModelConfig()
+        guard modelVersion.withCString({ name -> Bool in
+            mcfg.name = name
+            return vmaf_model_load(&model, &mcfg, name) == 0
+        }), let mdl = model else { return nil }
+        defer { vmaf_model_destroy(mdl) }
+        guard vmaf_use_features_from_model(ctx, mdl) == 0 else { return nil }
+
+        // Register CAMBI explicitly (not part of the default model).
+        _ = "cambi".withCString { vmaf_use_feature(ctx, $0, nil) }
+
+        var dist = VmafPicture(); var ref = VmafPicture()
+        guard vmaf_picture_alloc(&dist, VMAF_PIX_FMT_YUV420P, 8, UInt32(w), UInt32(h)) == 0
+        else { return nil }
+        guard vmaf_picture_alloc(&ref, VMAF_PIX_FMT_YUV420P, 8, UInt32(w), UInt32(h)) == 0
+        else { vmaf_picture_unref(&dist); return nil }
+
+        fillYUV420(&dist, rgba: rgbaA, w: w, h: h)
+        fillYUV420(&ref,  rgba: rgbaB, w: w, h: h)
+
+        guard vmaf_read_pictures(ctx, &ref, &dist, 0) == 0 else { return nil }
+        _ = vmaf_read_pictures(ctx, nil, nil, 0)
+
+        var vmafScore: Double = 0
+        _ = vmaf_score_at_index(ctx, mdl, &vmafScore, 0)
+
+        func feature(_ name: String) -> Float {
+            var s: Double = 0
+            _ = name.withCString { vmaf_feature_score_at_index(ctx, $0, &s, 0) }
+            return Float(s)
+        }
+
+        return FrameVMAFScores(
+            vmaf: Float(vmafScore),
+            adm: feature("integer_adm2"),
+            vif: [feature("integer_vif_scale0"), feature("integer_vif_scale1"),
+                  feature("integer_vif_scale2"), feature("integer_vif_scale3")],
+            motion: feature("integer_motion2"),
+            cambi: feature("cambi")
+        )
+    }
+
     static func scan(sourceA: TemporalSource, sourceB: TemporalSource,
                      duration: Double, fps: Double,
+                     metric: TemporalMetric,
                      cancel: TemporalAnalyzer.Cancel,
                      progress: @escaping (Double) -> Void) -> TemporalSeries? {
         guard duration > 0, fps > 0 else { return nil }
 
-        // Probe a reference resolution from A's first frame, cap width, force even.
         guard let (w0, h0) = probeSize(sourceA) ?? probeSize(sourceB) else { return nil }
         var w = min(maxWidth, w0)
         var h = Int(Double(h0) * Double(w) / Double(max(1, w0)))
@@ -54,6 +127,11 @@ enum VMAFEngine {
         defer { vmaf_model_destroy(mdl) }
         guard vmaf_use_features_from_model(ctx, mdl) == 0 else { return nil }
 
+        // Register CAMBI explicitly (not part of the default model).
+        if metric == .cambi {
+            _ = "cambi".withCString { vmaf_use_feature(ctx, $0, nil) }
+        }
+
         let total = max(2, Int((duration * fps).rounded()))
         var produced = 0
 
@@ -68,38 +146,45 @@ enum VMAFEngine {
             guard vmaf_picture_alloc(&ref, VMAF_PIX_FMT_YUV420P, 8, UInt32(w), UInt32(h)) == 0
             else { vmaf_picture_unref(&dist); break }
 
-            fillYUV420(&dist, rgba: rgbaA, w: w, h: h)   // A = distorted
-            fillYUV420(&ref,  rgba: rgbaB, w: w, h: h)   // B = reference
+            fillYUV420(&dist, rgba: rgbaA, w: w, h: h)
+            fillYUV420(&ref,  rgba: rgbaB, w: w, h: h)
 
-            // vmaf_read_pictures takes ownership of the picture buffers.
             if vmaf_read_pictures(ctx, &ref, &dist, UInt32(i)) != 0 { break }
             produced += 1
             if i % 4 == 0 { progress(Double(i + 1) / Double(total)) }
         }
         guard produced >= 2 else { return nil }
-        // Flush.
         _ = vmaf_read_pictures(ctx, nil, nil, 0)
+
+        // Feature name to query for the requested metric.
+        let featureName: String? = {
+            switch metric {
+            case .vmaf:   return nil   // use vmaf_score_at_index instead
+            case .vif:    return "integer_vif_scale2"
+            case .adm:    return "integer_adm2"
+            case .motion: return "integer_motion2"
+            case .cambi:  return "cambi"
+            default:      return nil
+            }
+        }()
 
         var values = [Float](); values.reserveCapacity(produced)
         var times = [Double](); times.reserveCapacity(produced)
         for i in 0..<produced {
             var score: Double = 0
-            if vmaf_score_at_index(ctx, mdl, &score, UInt32(i)) == 0 {
-                values.append(Float(score))
-                times.append(duration * Double(i) / Double(total - 1))
+            if let feat = featureName {
+                _ = feat.withCString { vmaf_feature_score_at_index(ctx, $0, &score, UInt32(i)) }
+            } else {
+                _ = vmaf_score_at_index(ctx, mdl, &score, UInt32(i))
             }
+            values.append(Float(score))
+            times.append(duration * Double(i) / Double(total - 1))
         }
         guard values.count >= 2 else { return nil }
 
-        // Worst = lowest VMAF, with non-maximum suppression for spread.
-        let order = values.indices.sorted { values[$0] < values[$1] }
-        let spacing = max(1, values.count / 24)
-        var events: [Int] = []
-        for idx in order where events.allSatisfy({ abs($0 - idx) >= spacing }) {
-            events.append(idx); if events.count >= 6 { break }
-        }
+        let events = TemporalAnalyzer.computeEvents(values, metric: metric)
         return TemporalSeries(times: times, values: values,
-                              events: events, worst: events.first, metric: .vmaf)
+                              events: events, worst: events.first, metric: metric)
     }
 
     // MARK: Frame access

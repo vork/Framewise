@@ -143,18 +143,22 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    if engine.temporalOpen && engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
+                        TemporalStrip(engine: engine)
+                    }
 
-            // Explorer requires both sides loaded — A vs B is the whole point.
-            // Stays hidden (without flipping the persisted flag) when only one
-            // side is present, so opening the second video reveals it again.
-            if engine.explorerOpen && engine.hasMediaA && engine.hasMediaB {
-                ExplorerPanel(engine: engine)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+                    if engine.explorerOpen && engine.hasMediaA && engine.hasMediaB {
+                        ExplorerPanel(engine: engine)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
 
-            if engine.scopesOpen && (engine.hasMediaA || engine.hasMediaB) {
-                ScopesPanel(engine: engine)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    if engine.scopesOpen && (engine.hasMediaA || engine.hasMediaB) {
+                        ScopesPanel(engine: engine)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
             }
 
             controlsBar
@@ -558,12 +562,6 @@ struct ContentView: View {
 
     var controlsBar: some View {
         VStack(spacing: 0) {
-            // Temporal error graph sits directly above the scrubber.
-            if engine.temporalOpen && engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
-                TemporalStrip(engine: engine)
-                Divider().opacity(0.15)
-            }
-
             // Timeline (shown for videos and image sequences)
             if engine.hasTimeline {
                 HStack(spacing: 10) {
@@ -792,18 +790,12 @@ struct ContentView: View {
         if engine.hasMediaA || engine.hasMediaB {
             Divider().frame(height: 16)
 
-            HStack(spacing: 3) {
-                Text("EV")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                Text("\(engine.exposure, specifier: "%+.1f")")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .trailing)
-            }
-            Slider(value: $engine.exposure, in: -10...10, step: 0.1)
-                .frame(width: 70)
-                .controlSize(.mini)
+            inlineSlider(label: "EV",
+                         value: $engine.exposure,
+                         range: -10...10,
+                         step: 0.1,
+                         format: "%+.1f",
+                         width: 70)
         }
     }
 
