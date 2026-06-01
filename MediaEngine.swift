@@ -546,17 +546,18 @@ final class MediaEngine: ObservableObject {
         isScanningTemporal = true
         temporalProgress = 0
         Task.detached(priority: .userInitiated) { [weak self] in
+            let weakSelf = self
             let series: TemporalSeries?
             if scanMode == .aroundSpikes, let existing = existingSeries {
                 series = TemporalAnalyzer.scanAroundSpikes(
                     sourceA: sa, sourceB: sb, duration: dur, fps: fps,
                     metric: metric, baseSeries: existing, cancel: cancel,
-                    progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+                    progress: { p in Task { @MainActor in weakSelf?.temporalProgress = p } })
             } else {
                 series = TemporalAnalyzer.scan(
                     sourceA: sa, sourceB: sb, duration: dur, fps: fps,
                     detailed: scanMode == .everyFrame, metric: metric, cancel: cancel,
-                    progress: { p in Task { @MainActor in self?.temporalProgress = p } })
+                    progress: { p in Task { @MainActor in weakSelf?.temporalProgress = p } })
             }
             guard let self else { return }
             await MainActor.run {
@@ -648,8 +649,9 @@ final class MediaEngine: ObservableObject {
         guard blinkAuto, blinkActive else { return }
         let interval = max(0.05, blinkInterval)
         blinkTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self, self.blinkActive else { return }
+                guard self.blinkActive else { return }
                 self.blinkShowingA.toggle()
             }
         }
@@ -1069,7 +1071,8 @@ final class MediaEngine: ObservableObject {
         seqAnchorWall = CACurrentMediaTime()
         seqAnchorTime = currentTime
         seqTicker = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.sequenceTick() }
+            guard let self else { return }
+            Task { @MainActor in self.sequenceTick() }
         }
     }
 
