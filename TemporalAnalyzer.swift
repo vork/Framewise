@@ -280,24 +280,21 @@ struct TemporalStrip: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 4)
-        .background(Theme.panel)
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "chart.xyaxis.line")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.accentA)
-            Text("Error over time")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.text)
 
-            Picker("Metric", selection: $engine.temporalMetric) {
+            Picker("", selection: $engine.temporalMetric) {
                 ForEach(TemporalMetric.allCases.filter { !$0.requiresVMAF || engine.vmafAvailable }) { m in
                     Text(m.label).tag(m)
                 }
             }
-            .frame(width: 110)
+            .frame(width: 90)
+            .labelsHidden()
             .onChange(of: engine.temporalMetric) {
                 engine.invalidateTemporalSeries()
                 engine.runTemporalScan()
@@ -305,29 +302,30 @@ struct TemporalStrip: View {
 
             Picker("", selection: $engine.temporalScanMode) {
                 Text("Sampled").tag(TemporalScanMode.sampled)
-                Text("Around spikes").tag(TemporalScanMode.aroundSpikes)
-                Text("Every frame").tag(TemporalScanMode.everyFrame)
+                Text("Spikes").tag(TemporalScanMode.aroundSpikes)
+                Text("All").tag(TemporalScanMode.everyFrame)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 220)
+            .frame(width: 160)
 
             Button {
                 if engine.isScanningTemporal { engine.cancelTemporalScan() }
                 else { engine.runTemporalScan() }
             } label: {
-                HStack(spacing: 4) {
-                    if engine.isScanningTemporal {
+                if engine.isScanningTemporal {
+                    HStack(spacing: 3) {
                         ProgressView().controlSize(.mini)
                         Text("\(Int(engine.temporalProgress * 100))%")
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                        Text(engine.temporalSeries == nil ? "Scan" : "Rescan")
                     }
+                    .font(.system(size: 10, weight: .medium))
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .medium))
                 }
-                .font(.system(size: 11, weight: .medium))
             }
             .buttonStyle(GhostButtonStyle())
+            .help(engine.temporalSeries == nil ? "Scan" : "Rescan")
 
             Spacer()
 
@@ -335,7 +333,7 @@ struct TemporalStrip: View {
                 Button {
                     engine.seekToPosition(s.times[w] / max(0.0001, engine.duration))
                 } label: {
-                    Text("Worst → \(timeStr(s.times[w]))")
+                    Text("Worst \(timeStr(s.times[w]))")
                         .font(.system(size: 10, design: .monospaced))
                 }
                 .buttonStyle(GhostButtonStyle())
@@ -343,13 +341,13 @@ struct TemporalStrip: View {
 
             Button { engine.temporalOpen = false } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: 16, height: 16)
+                    .frame(width: 14, height: 14)
                     .background(Theme.panel2, in: Circle())
             }
             .buttonStyle(.plain)
-            .help("Close temporal graph (T)")
+            .help("Close (T)")
         }
     }
 

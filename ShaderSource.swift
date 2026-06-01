@@ -21,7 +21,7 @@ struct Uniforms {
     int hasMediaA;
     int hasMediaB;
     int showSlider;
-    int displayMode;    // 0=split, 1=error
+    int displayMode;    // 0=split, 1=blink, 2=error
     int errorMetric;    // 0=error, 1=abs, 2=squared, 3=relAbs, 4=relSquared
     int tonemapMode;    // 0=gamma, 1=falseColor, 2=posNeg
     float exposure;
@@ -474,7 +474,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     // Blink overrides everything: show a single side full-frame and flip in
     // place. Requires both sides loaded; otherwise it's a no-op.
     bool blink = (u.blinkSide >= 0) && (u.hasMediaA != 0) && (u.hasMediaB != 0);
-    bool isErrorMode = (u.displayMode == 1 && u.hasMediaA != 0 && u.hasMediaB != 0) && !blink;
+    bool isErrorMode = (u.displayMode == 2 && u.hasMediaA != 0 && u.hasMediaB != 0) && !blink;
     bool fragmentOnSideA = false;   // true if split-mode pixel reads from A
     // Raw (pre-tonemap, extended-range) sampled color of the displayed side,
     // kept for the out-of-gamut test (which needs the negative values that

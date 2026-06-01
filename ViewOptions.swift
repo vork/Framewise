@@ -3,9 +3,9 @@ import SwiftUI
 // MARK: - View options popover
 //
 // Houses the "pro viewing" controls that don't warrant permanent toolbar real
-// estate: blink comparison, channel isolation, clipping / gamut warnings,
-// playback-speed reduction, A/B alignment offset, and segment looping. Each
-// section hides itself when it isn't applicable to the current media.
+// estate: channel isolation, clipping / gamut warnings, playback-speed
+// reduction, A/B alignment offset, and segment looping. Each section hides
+// itself when it isn't applicable to the current media.
 
 struct ViewOptionsButton: View {
     @ObservedObject var engine: MediaEngine
@@ -14,9 +14,9 @@ struct ViewOptionsButton: View {
     /// True when any non-default viewing option is active — surfaces a brand
     /// dot on the button so the user knows something is engaged.
     private var anyActive: Bool {
-        engine.blinkActive || engine.channelMode != .rgb ||
+        engine.channelMode != .rgb ||
         engine.clipWarning || engine.gamutWarning ||
-        engine.playbackSpeed != .full || engine.abOffsetFrames != 0 ||
+        engine.playbackSpeed != .full ||
         engine.loopEnabled
     }
 
@@ -34,7 +34,7 @@ struct ViewOptionsButton: View {
             }
         }
         .buttonStyle(GhostButtonStyle(active: isOpen || anyActive))
-        .help("Viewing options — blink, channels, warnings, speed, offset, loop")
+        .help("Viewing options — channels, warnings, speed, offset, loop")
         .popover(isPresented: $isOpen, arrowEdge: .bottom) {
             ViewOptionsPopover(engine: engine)
         }
@@ -50,8 +50,6 @@ private struct ViewOptionsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            blinkSection
-            Divider().opacity(0.4)
             channelSection
             Divider().opacity(0.4)
             warningsSection
@@ -64,7 +62,7 @@ private struct ViewOptionsPopover: View {
                 Divider().opacity(0.4)
                 playbackSection
             }
-            if bothVideo {
+            if false && bothVideo {
                 Divider().opacity(0.4)
                 offsetSection
             }
@@ -98,57 +96,6 @@ private struct ViewOptionsPopover: View {
 
     private func fpsLabel(_ fps: Double) -> String {
         fps == fps.rounded() ? String(format: "%.0f", fps) : String(format: "%.2f", fps)
-    }
-
-    // MARK: Blink
-
-    private var blinkSection: some View {
-        let canBlink = engine.hasMediaA && engine.hasMediaB
-        return VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Blink compare", systemImage: "arrow.left.arrow.right")
-            HStack(spacing: 8) {
-                Toggle("On", isOn: Binding(
-                    get: { engine.blinkActive },
-                    set: { _ in engine.toggleBlink() }
-                ))
-                .toggleStyle(.switch)
-                .disabled(!canBlink)
-
-                if engine.blinkActive {
-                    Spacer()
-                    // Current side badge — tap to flip.
-                    Button { engine.blinkSwap() } label: {
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(engine.blinkShowingA ? Theme.sideA : Theme.sideB)
-                                .frame(width: 8, height: 8)
-                            Text(engine.blinkShowingA ? "Showing A" : "Showing B")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Theme.text)
-                        }
-                    }
-                    .buttonStyle(GhostButtonStyle())
-                }
-            }
-            if engine.blinkActive {
-                Toggle(isOn: $engine.blinkAuto) {
-                    Text("Auto-flip").font(.system(size: 11))
-                }
-                .toggleStyle(.switch)
-                if engine.blinkAuto {
-                    HStack(spacing: 6) {
-                        Text("Rate").font(.system(size: 10)).foregroundStyle(Theme.muted)
-                        Slider(value: $engine.blinkInterval, in: 0.1...1.5)
-                        Text(String(format: "%.0f ms", engine.blinkInterval * 1000))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.muted)
-                            .frame(width: 52, alignment: .trailing)
-                    }
-                }
-            }
-            Text("Press B to swap A↔B in place. Works during playback.")
-                .font(.system(size: 10)).foregroundStyle(Theme.muted)
-        }
     }
 
     // MARK: Channels

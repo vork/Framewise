@@ -168,8 +168,7 @@ struct ScopesPanel: View {
                 .padding(.vertical, 8)
             }
         }
-        .frame(height: engine.scopeMode == .vectorscope ? 300 : 220)
-        .background(Theme.panel)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -271,6 +270,81 @@ struct ScopesPanel: View {
     }
 }
 
+/// Single-side scope panel used in split mode — one per video side.
+struct SingleScopePanel: View {
+    @ObservedObject var engine: MediaEngine
+    let side: MediaSide
+    let panelSize: CGSize
+
+    private var sideLabel: String { side == .a ? "A" : "B" }
+    private var sideColor: Color { side == .a ? Theme.sideA : Theme.sideB }
+    private var data: ScopeData? { side == .a ? engine.scopeDataA : engine.scopeDataB }
+    private var present: Bool { side == .a ? engine.hasMediaA : engine.hasMediaB }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().opacity(0.2)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(Color.black)
+                RoundedRectangle(cornerRadius: 6).stroke(Theme.border, lineWidth: 1)
+                if !present {
+                    Text("—").foregroundStyle(Theme.muted)
+                } else if let data {
+                    scopeContent(data).padding(6)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+        .frame(width: panelSize.width, height: panelSize.height)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Circle().fill(sideColor).frame(width: 8, height: 8)
+            Text(sideLabel)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.text)
+
+            Picker("", selection: $engine.scopeMode) {
+                ForEach(ScopeMode.allCases) { m in Text(m.label).tag(m) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+
+            Spacer()
+
+            Button { engine.scopesOpen = false } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 18, height: 18)
+                    .background(Theme.panel2, in: Circle())
+                    .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
+    @ViewBuilder
+    private func scopeContent(_ data: ScopeData) -> some View {
+        switch engine.scopeMode {
+        case .histogram:
+            HistogramView(data: data)
+        case .waveform:
+            if let img = data.waveform { WaveformView(image: img) }
+        case .vectorscope:
+            if let img = data.vectorscope { VectorscopeView(image: img) }
+        }
+    }
+}
+
 /// RGB-overlaid histogram drawn with additive (screen) blending, plus a luma
 /// outline. Cheap enough to redraw live (256 bins per channel).
 private struct HistogramView: View {
@@ -331,8 +405,8 @@ private struct HistogramView: View {
 private struct HistogramGrid: View {
     var body: some View {
         Canvas { ctx, size in
-            let gc = Color.white.opacity(0.1)
-            let labelColor = Color.white.opacity(0.35)
+            let gc = Color.white.opacity(0.25)
+            let labelColor = Color.white.opacity(0.5)
             let labelFont = Font.system(size: 7, weight: .medium, design: .monospaced)
             let vLines: [(CGFloat, String)] = [
                 (0.0, "0"), (0.25, "64"), (0.5, "128"), (0.75, "192"), (1.0, "255")
@@ -376,10 +450,10 @@ private struct WaveformView: View {
                     var path = Path()
                     path.move(to: CGPoint(x: 0, y: y))
                     path.addLine(to: CGPoint(x: size.width, y: y))
-                    ctx.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
+                    ctx.stroke(path, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
                     ctx.draw(Text(label)
                         .font(.system(size: 8, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4)),
+                        .foregroundColor(.white.opacity(0.55)),
                              at: CGPoint(x: 14, y: y), anchor: .leading)
                 }
             }
@@ -404,16 +478,14 @@ private struct VectorscopeView: View {
                 let size = min(proxy.size.width, proxy.size.height)
                 let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
                 Canvas { ctx, _ in
-                    let graticuleColor = Color.white.opacity(0.2)
+                    let graticuleColor = Color.white.opacity(0.35)
 
-                    // Concentric circles at 25%, 50%, 75%, 100% saturation
                     for pct in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
                         let r = size / 2 * pct
                         let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
                         ctx.stroke(Path(ellipseIn: rect), with: .color(graticuleColor), lineWidth: 0.5)
                     }
 
-                    // Crosshair
                     var hLine = Path()
                     hLine.move(to: CGPoint(x: center.x - size / 2, y: center.y))
                     hLine.addLine(to: CGPoint(x: center.x + size / 2, y: center.y))
@@ -423,7 +495,6 @@ private struct VectorscopeView: View {
                     vLine.addLine(to: CGPoint(x: center.x, y: center.y + size / 2))
                     ctx.stroke(vLine, with: .color(graticuleColor), lineWidth: 0.5)
 
-                    // Skin tone line (~123 degrees in Cb/Cr space, roughly from center toward upper-left)
                     let skinAngle: CGFloat = 123 * .pi / 180
                     let skinEnd = CGPoint(
                         x: center.x + cos(skinAngle) * size / 2,
@@ -431,7 +502,7 @@ private struct VectorscopeView: View {
                     var skinLine = Path()
                     skinLine.move(to: center)
                     skinLine.addLine(to: skinEnd)
-                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.35)), lineWidth: 1)
+                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.5)), lineWidth: 1)
 
                     // Color target boxes at 75% saturation (BT.709 Cb/Cr)
                     // Pure color Cb/Cr from the BT.709 formula:
@@ -501,10 +572,10 @@ private struct ComparisonWaveformView: View {
                     var path = Path()
                     path.move(to: CGPoint(x: 0, y: y))
                     path.addLine(to: CGPoint(x: size.width, y: y))
-                    ctx.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
+                    ctx.stroke(path, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
                     ctx.draw(Text(label)
                         .font(.system(size: 8, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4)),
+                        .foregroundColor(.white.opacity(0.55)),
                              at: CGPoint(x: 14, y: y), anchor: .leading)
                 }
             }
@@ -569,7 +640,7 @@ private struct ComparisonVectorscopeView: View {
                 let size = min(proxy.size.width, proxy.size.height)
                 let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
                 Canvas { ctx, _ in
-                    let gc = Color.white.opacity(0.2)
+                    let gc = Color.white.opacity(0.35)
                     for pct in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
                         let r = size / 2 * pct
                         let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
@@ -591,7 +662,7 @@ private struct ComparisonVectorscopeView: View {
                     var skinLine = Path()
                     skinLine.move(to: center)
                     skinLine.addLine(to: skinEnd)
-                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.35)), lineWidth: 1)
+                    ctx.stroke(skinLine, with: .color(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.5)), lineWidth: 1)
                 }
                 .allowsHitTesting(false)
             }

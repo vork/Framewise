@@ -17,7 +17,7 @@ struct Uniforms {
     var hasMediaA: Int32 = 0
     var hasMediaB: Int32 = 0
     var showSlider: Int32 = 1
-    var displayMode: Int32 = 0      // 0=split, 1=error
+    var displayMode: Int32 = 0      // 0=split, 1=blink, 2=error
     var errorMetric: Int32 = 0      // 0..4
     var tonemapMode: Int32 = 0      // see TonemapMode enum
     var exposure: Float = 0.0
@@ -507,7 +507,7 @@ extension MetalComparisonView {
                                          Float(max(1, engine.mediaSizeB.height))),
                 hasMediaA: engine.hasMediaA ? 1 : 0,
                 hasMediaB: engine.hasMediaB ? 1 : 0,
-                showSlider: (engine.displayMode == .split && engine.hasMediaA && engine.hasMediaB && !engine.blinkActive) ? 1 : 0,
+                showSlider: (engine.displayMode == .split && engine.hasMediaA && engine.hasMediaB) ? 1 : 0,
                 displayMode: Int32(engine.displayMode.rawValue),
                 errorMetric: Int32(engine.errorMetric.rawValue),
                 tonemapMode: Int32(engine.tonemapMode.rawValue),

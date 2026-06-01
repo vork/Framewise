@@ -16,7 +16,6 @@ struct ExplorerPanel: View {
             Divider().opacity(0.2)
             content
         }
-        .background(Theme.panel)
     }
 
     // MARK: Header — two-row layout to avoid crowding on narrower windows.

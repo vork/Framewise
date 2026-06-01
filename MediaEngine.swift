@@ -92,7 +92,8 @@ enum MediaType {
 
 enum DisplayMode: Int, CaseIterable {
     case split = 0
-    case error = 1
+    case blink = 1
+    case error = 2
 }
 
 /// Channel isolation for the displayed image. Applied after tonemapping so the
@@ -426,7 +427,14 @@ final class MediaEngine: ObservableObject {
 
     // Error visualization (persisted)
     @Published var displayMode: DisplayMode = .split {
-        didSet { UserDefaults.standard.set(displayMode.rawValue, forKey: "displayMode") }
+        didSet {
+            if displayMode == .blink {
+                if !blinkActive { blinkActive = true; blinkShowingA = true }
+            } else {
+                if blinkActive { exitBlink() }
+                UserDefaults.standard.set(displayMode.rawValue, forKey: "displayMode")
+            }
+        }
     }
     @Published var errorMetric: ErrorMetric = .error {
         didSet { UserDefaults.standard.set(errorMetric.rawValue, forKey: "errorMetric") }
@@ -675,15 +683,7 @@ final class MediaEngine: ObservableObject {
     /// captures (or two encodes) that start a few frames apart. Positive shifts
     /// B later. Re-seeks B immediately when changed while paused; during
     /// playback, re-syncs B with rate preservation via completion handler.
-    @Published var abOffsetFrames: Int = 0 {
-        didSet {
-            if isPlaying {
-                syncPlayersNow(thenPlayRate: Float(playbackSpeed.rawValue))
-            } else {
-                applyOffsetSeek()
-            }
-        }
-    }
+    @Published var abOffsetFrames: Int = 0
 
     /// B's playback offset as a CMTime, derived from B's frame rate.
     private var abOffsetTime: CMTime {
@@ -837,7 +837,7 @@ final class MediaEngine: ObservableObject {
     // MARK: - Init (restore persisted settings)
     init() {
         let ud = UserDefaults.standard
-        if let v = DisplayMode(rawValue: ud.integer(forKey: "displayMode")) { displayMode = v }
+        if let v = DisplayMode(rawValue: ud.integer(forKey: "displayMode")), v != .blink { displayMode = v }
         if let v = ErrorMetric(rawValue: ud.integer(forKey: "errorMetric")) { errorMetric = v }
         if let v = TonemapMode(rawValue: ud.integer(forKey: "tonemapMode")) { tonemapMode = v }
         if ud.object(forKey: "pixelInspect") != nil {
@@ -1133,10 +1133,8 @@ final class MediaEngine: ObservableObject {
             mediaKindB = nil
         }
         recalculateDuration()
-        // Fall back to split if both sides aren't loaded
         if !(hasMediaA && hasMediaB) {
             displayMode = .split
-            exitBlink()   // blink is meaningless without both sides
         }
         if !hasSequence { stopSequenceTicker() }
         setupTimeObserver()
@@ -1366,17 +1364,14 @@ final class MediaEngine: ObservableObject {
 
     func play() {
         guard hasTimeline else { return }
-        // If a loop is armed and we're sitting at/after the out point, drop back
-        // to the in point so pressing play resumes inside the segment.
         if loopEnabled && hasLoopRegion && currentTime >= loopEnd - 1e-3 {
             seek(to: CMTime(seconds: loopStart, preferredTimescale: 9000))
         }
         let rate = Float(playbackSpeed.rawValue)
-        playerA?.rate = rate
-        syncPlayersNow(thenPlayRate: rate)
         isPlaying = true
-        // Sequence-only playback has no AVPlayer clock — drive it ourselves.
         if !hasPlayableVideo && hasSequence { startSequenceTicker() }
+        playerA?.rate = rate
+        playerB?.rate = rate
     }
 
     func pause() {
@@ -1460,8 +1455,7 @@ final class MediaEngine: ObservableObject {
 
     func seek(to time: CMTime) {
         playerA?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-        // B follows A but shifted by the A/B alignment offset.
-        playerB?.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero)
+        playerB?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         if hasPlayableVideo {
             updateTimeFromPlayer()
         } else {
@@ -1504,20 +1498,13 @@ final class MediaEngine: ObservableObject {
 
     // MARK: - Private
 
-    private func syncPlayersNow(thenPlayRate rate: Float = 0) {
+    private func syncPlayersNow() {
         let time = playerA?.currentTime() ?? playerB?.currentTime() ?? .zero
         if let pB = playerB, hasMediaA {
-            pB.seek(to: offsetTimeForB(time), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                guard let self else { return }
-                if rate != 0 {
-                    Task { @MainActor in self.playerB?.rate = rate }
-                }
-            }
-        } else if rate != 0 {
-            playerB?.rate = rate
+            pB.seek(to: time)
         }
         if let pA = playerA, hasMediaB && !hasMediaA {
-            pA.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            pA.seek(to: time)
         }
     }
 
@@ -1557,20 +1544,6 @@ final class MediaEngine: ObservableObject {
                     self.playerB?.rate = rate
                 }
 
-                // Re-sync player B if it drifts from A's time + the alignment offset.
-                if self.isPlaying, let pA = self.playerA, let pB = self.playerB {
-                    let target = self.offsetTimeForB(pA.currentTime())
-                    let drift = abs(target.seconds - pB.currentTime().seconds)
-                    if drift > 0.03 {
-                        let rate = Float(self.playbackSpeed.rawValue)
-                        pB.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                            guard let self else { return }
-                            Task { @MainActor in
-                                if self.isPlaying { self.playerB?.rate = rate }
-                            }
-                        }
-                    }
-                }
             }
         }
     }

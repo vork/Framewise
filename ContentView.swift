@@ -7,12 +7,14 @@ extension DisplayMode {
     var label: String {
         switch self {
         case .split: return "Split"
+        case .blink: return "Blink"
         case .error: return "Error"
         }
     }
     var icon: String {
         switch self {
         case .split: return "rectangle.split.2x1"
+        case .blink: return "arrow.left.arrow.right"
         case .error: return "waveform.path.ecg"
         }
     }
@@ -73,6 +75,52 @@ struct ContentView: View {
     @State private var frameInput: String = ""
     @State private var showHelp = false
     @State private var hostWindow: NSWindow?
+
+    // Floating panel positions (persisted). Offsets are from center of the view.
+    // Split mode: top-left / top-right. Error mode: top-center.
+    @AppStorage("scopesPanelOffsetW") private var scopesPanelOffsetW: Double = 0
+    @AppStorage("scopesPanelOffsetH") private var scopesPanelOffsetH: Double = -150
+    @AppStorage("scopeAPanelOffsetW") private var scopeAPanelOffsetW: Double = -250
+    @AppStorage("scopeAPanelOffsetH") private var scopeAPanelOffsetH: Double = -150
+    @AppStorage("scopeBPanelOffsetW") private var scopeBPanelOffsetW: Double = 250
+    @AppStorage("scopeBPanelOffsetH") private var scopeBPanelOffsetH: Double = -150
+    // Resizable scope panel sizes (persisted)
+    @AppStorage("scopesPanelW") private var scopesPanelW: Double = 480
+    @AppStorage("scopesPanelH") private var scopesPanelH: Double = 300
+    @AppStorage("scopeAPanelW") private var scopeAPanelW: Double = 340
+    @AppStorage("scopeAPanelH") private var scopeAPanelH: Double = 280
+    @AppStorage("scopeBPanelW") private var scopeBPanelW: Double = 340
+    @AppStorage("scopeBPanelH") private var scopeBPanelH: Double = 280
+    // Z-ordering: higher value = on top
+    @State private var scopesZ: Double = 1
+    @State private var scopeAZ: Double = 1
+    @State private var scopeBZ: Double = 1
+    @State private var panelZCounter: Double = 1
+
+    private var scopesPanelOffset: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopesPanelOffsetW, height: scopesPanelOffsetH) },
+                set: { scopesPanelOffsetW = $0.width; scopesPanelOffsetH = $0.height })
+    }
+    private var scopeAPanelOffset: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopeAPanelOffsetW, height: scopeAPanelOffsetH) },
+                set: { scopeAPanelOffsetW = $0.width; scopeAPanelOffsetH = $0.height })
+    }
+    private var scopeBPanelOffset: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopeBPanelOffsetW, height: scopeBPanelOffsetH) },
+                set: { scopeBPanelOffsetW = $0.width; scopeBPanelOffsetH = $0.height })
+    }
+    private var scopesPanelSize: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopesPanelW, height: scopesPanelH) },
+                set: { scopesPanelW = $0.width; scopesPanelH = $0.height })
+    }
+    private var scopeAPanelSize: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopeAPanelW, height: scopeAPanelH) },
+                set: { scopeAPanelW = $0.width; scopeAPanelH = $0.height })
+    }
+    private var scopeBPanelSize: Binding<CGSize> {
+        Binding(get: { CGSize(width: scopeBPanelW, height: scopeBPanelH) },
+                set: { scopeBPanelW = $0.width; scopeBPanelH = $0.height })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,28 +191,64 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 0) {
-                    if engine.temporalOpen && engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
-                        TemporalStrip(engine: engine)
-                    }
+            .overlay {
+                if engine.scopesOpen && (engine.hasMediaA || engine.hasMediaB) {
+                    if engine.displayMode != .error && engine.hasMediaA && engine.hasMediaB {
+                        ResizableFloatingPanel(offset: scopeAPanelOffset, panelSize: scopeAPanelSize,
+                                              minSize: CGSize(width: 180, height: 140),
+                                              onDrag: { bringToFront(.scopeA) }) { size in
+                            SingleScopePanel(engine: engine, side: .a, panelSize: size)
+                        }
+                        .zIndex(scopeAZ)
+                        .transition(.opacity)
 
+                        ResizableFloatingPanel(offset: scopeBPanelOffset, panelSize: scopeBPanelSize,
+                                              minSize: CGSize(width: 180, height: 140),
+                                              onDrag: { bringToFront(.scopeB) }) { size in
+                            SingleScopePanel(engine: engine, side: .b, panelSize: size)
+                        }
+                        .zIndex(scopeBZ)
+                        .transition(.opacity)
+                    } else {
+                        ResizableFloatingPanel(offset: scopesPanelOffset, panelSize: scopesPanelSize,
+                                              minSize: CGSize(width: 280, height: 180),
+                                              onDrag: { bringToFront(.scopes) }) { _ in
+                            ScopesPanel(engine: engine)
+                        }
+                        .zIndex(scopesZ)
+                        .transition(.opacity)
+                    }
+                }
+
+            }
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 6) {
                     if engine.explorerOpen && engine.hasMediaA && engine.hasMediaB {
                         ExplorerPanel(engine: engine)
+                            .background(Theme.panel.opacity(0.78))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                            .padding(.horizontal, 16)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-
-                    if engine.scopesOpen && (engine.hasMediaA || engine.hasMediaB) {
-                        ScopesPanel(engine: engine)
+                    if engine.temporalOpen && engine.hasMediaA && engine.hasMediaB && engine.hasTimeline {
+                        TemporalStrip(engine: engine)
+                            .background(Theme.panel.opacity(0.78))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                            .padding(.horizontal, 16)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
+                .padding(.bottom, 8)
             }
 
             controlsBar
         }
-        .animation(.easeInOut(duration: 0.18),
-                   value: engine.explorerOpen && engine.hasMediaA && engine.hasMediaB)
+        .animation(.easeInOut(duration: 0.18), value: engine.scopesOpen)
+        .animation(.easeInOut(duration: 0.18), value: engine.explorerOpen)
+        .animation(.easeInOut(duration: 0.18), value: engine.temporalOpen)
+        .animation(.easeInOut(duration: 0.18), value: engine.displayMode)
         .background(Theme.bg)
         .tint(Theme.accentA)
         .preferredColorScheme(.dark)
@@ -200,7 +284,9 @@ struct ContentView: View {
         // ── Display mode ─────────────────────────────────────
         .onKeyPress("e") {
             if engine.hasMediaA && engine.hasMediaB {
-                engine.displayMode = engine.displayMode == .split ? .error : .split
+                let all = DisplayMode.allCases
+                let idx = (all.firstIndex(of: engine.displayMode) ?? 0) + 1
+                engine.displayMode = all[idx % all.count]
             }
             return .handled
         }
@@ -224,7 +310,14 @@ struct ContentView: View {
         // ── Pixel inspection ─────────────────────────────────
         .onKeyPress("p") { engine.pixelInspect.toggle(); return .handled }
         // ── Blink / channels / loop ──────────────────────────
-        .onKeyPress("b") { engine.blinkSwap(); return .handled }
+        .onKeyPress("b") {
+            if engine.displayMode == .blink {
+                engine.blinkShowingA.toggle()
+            } else if engine.hasMediaA && engine.hasMediaB {
+                engine.displayMode = .blink
+            }
+            return .handled
+        }
         .onKeyPress("c") { engine.cycleChannel(); return .handled }
         .onKeyPress("i") { engine.setLoopIn(); return .handled }
         .onKeyPress("o") { engine.setLoopOut(); return .handled }
@@ -248,7 +341,7 @@ struct ContentView: View {
         .onKeyPress("?") { showHelp.toggle(); return .handled }
         .onKeyPress(.escape) {
             if showHelp { showHelp = false; return .handled }
-            if engine.blinkActive { engine.exitBlink(); return .handled }
+            if engine.displayMode == .blink { engine.displayMode = .split; return .handled }
             return .ignored
         }
     }
@@ -558,6 +651,19 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Floating panel helpers
+
+    private enum PanelID { case scopes, scopeA, scopeB }
+
+    private func bringToFront(_ panel: PanelID) {
+        panelZCounter += 1
+        switch panel {
+        case .scopes: scopesZ = panelZCounter
+        case .scopeA: scopeAZ = panelZCounter
+        case .scopeB: scopeBZ = panelZCounter
+        }
+    }
+
     // MARK: - Controls Bar
 
     var controlsBar: some View {
@@ -711,8 +817,8 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 120)
-            .help("Toggle Split/Error mode (E)")
+            .frame(width: 190)
+            .help("Display mode: Split / Blink / Error (E to cycle)")
 
             // Error metric picker: always visible when both sides are loaded.
             // In split mode the picker still matters because the hover readout
@@ -876,6 +982,106 @@ struct ContentView: View {
             }
         }
         return types
+    }
+}
+
+// MARK: - Floating Panel
+
+/// A draggable overlay container that wraps any panel content. Position is
+/// tracked with an offset-based DragGesture so the panel moves smoothly from
+/// wherever it was last placed. Use `onDrag` to notify the parent for z-ordering.
+private struct FloatingPanel<Content: View>: View {
+    @Binding var offset: CGSize
+    var onDrag: () -> Void = {}
+    @ViewBuilder var content: Content
+
+    @State private var dragStart: CGSize = .zero
+
+    var body: some View {
+        content
+            .background(Theme.panel.opacity(0.78))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+            .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+            .offset(offset)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        offset = CGSize(
+                            width: dragStart.width + value.translation.width,
+                            height: dragStart.height + value.translation.height
+                        )
+                        onDrag()
+                    }
+                    .onEnded { _ in
+                        dragStart = offset
+                    }
+            )
+            .onAppear { dragStart = offset }
+    }
+}
+
+/// Draggable + resizable floating panel. The content receives the current
+/// panel size so it can adapt its layout. A small grip handle in the bottom-
+/// right corner drives the resize gesture.
+private struct ResizableFloatingPanel<Content: View>: View {
+    @Binding var offset: CGSize
+    @Binding var panelSize: CGSize
+    var minSize: CGSize = CGSize(width: 200, height: 150)
+    var onDrag: () -> Void = {}
+    @ViewBuilder var content: (CGSize) -> Content
+
+    @State private var dragStart: CGSize = .zero
+    @State private var resizeStart: CGSize = .zero
+
+    var body: some View {
+        content(panelSize)
+            .frame(width: panelSize.width, height: panelSize.height)
+            .background(Theme.panel.opacity(0.78))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+            .overlay(alignment: .bottomTrailing) { resizeHandle }
+            .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+            .offset(offset)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        offset = CGSize(
+                            width: dragStart.width + value.translation.width,
+                            height: dragStart.height + value.translation.height
+                        )
+                        onDrag()
+                    }
+                    .onEnded { _ in
+                        dragStart = offset
+                    }
+            )
+            .onAppear {
+                dragStart = offset
+                resizeStart = panelSize
+            }
+    }
+
+    private var resizeHandle: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white.opacity(0.4))
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle().size(width: 24, height: 24))
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        panelSize = CGSize(
+                            width: max(minSize.width, resizeStart.width + value.translation.width),
+                            height: max(minSize.height, resizeStart.height + value.translation.height)
+                        )
+                        onDrag()
+                    }
+                    .onEnded { _ in
+                        resizeStart = panelSize
+                    }
+            )
+            .padding(4)
     }
 }
 
