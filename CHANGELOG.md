@@ -5,38 +5,38 @@ All notable changes to Framewise are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-06-01
 
 ### Added
-- **VMAF** (opt-in) — Netflix's perceptual video metric, available as a third
-  metric in the error-over-time graph. Because it needs the native `libvmaf`
-  library, it's gated behind the `FRAMEWISE_VMAF` build flag and off by default;
-  the default build is unaffected. See README → "Building with VMAF". The glue
-  (`VMAFEngine.swift`) streams both sides as YUV420p through libvmaf's built-in
-  `vmaf_v0.6.1` model and charts per-frame scores.
-- **Error-over-time graph** (`T`) — a strip above the scrubber charting the
-  chosen metric (MAE or PSNR) per frame across the whole clip, so you can see
-  *where* a render/encode breaks rather than just a single global number.
-  Worst-error frames are marked as clickable events (and a "Worst →" jump);
-  clicking anywhere on the graph seeks there. Two scan modes: a fast **sampled**
-  pass (~200 points, default) and a **every-frame** detailed pass, run on a
-  background task with progress and cancel.
-- **Scopes** (`S`) — a histogram (RGB overlaid + luma), waveform, and
-  vectorscope, shown side-by-side for A and B so two videos/renders can be
-  compared at a glance. Computed off the main thread on a downscaled frame and
-  refreshed as frames arrive (work is throttled so it never piles up).
+- **VMAF integration** (opt-in) — Netflix's perceptual video metric suite,
+  statically linked against `libvmaf` and gated behind the `FRAMEWISE_VMAF`
+  build flag. Exposes per-frame global VMAF scores in the explorer panel plus
+  four sub-metrics (VIF, ADM, Motion, CAMBI) selectable in the temporal graph.
+  The CI workflow builds libvmaf from source as a universal static archive
+  (cached across runs) and links it into both arm64 and x86_64 slices.
+- **Error-over-time graph** (`T`) — a docked strip at the bottom charting the
+  chosen metric per frame across the whole clip, with seven available metrics
+  (MAE, PSNR, VMAF, VIF, ADM, Motion, CAMBI). Worst-error frames are marked as
+  clickable events that seek on tap. Three scan modes: **sampled** (count scales
+  with video duration), **around spikes** (dense ±2 s around detected events),
+  and **every frame**.
+- **Scopes** (`S`) — histogram (RGB + luma), waveform, and vectorscope with
+  professional graticules (value lines, color-target boxes, skin-tone line). In
+  split/blink mode each side gets its own draggable, resizable floating panel;
+  in error mode a single comparison panel overlays both sides with distinct
+  tints (blue = A, orange = B) and additive blending. Panel positions and sizes
+  persist across launches via `@AppStorage`.
 - **Image sequence support** — drop a folder or multiple numbered frames (e.g.
   `render.0001.exr … render.0240.exr`), or pick them from the Open dialog, to
   load a playable image sequence onto a side. Sequences scrub, step, loop, and
   play back through the full transport, and pair with a video or another
   sequence. The playback frame rate is selectable (23.976 / 24 / 25 / 30 / 50 /
-  60) in the viewing-options popover, since image frames carry no timing. A
-  single file still loads as one still image.
-- **Blink comparison** — press `B` to swap A↔B full-frame in place (the "blink
-  comparator" technique), the fastest way to spot sub-pixel differences. Works
-  during playback. `Esc` or the toolbar exits; an auto-flip mode with an
-  adjustable rate is available in the new viewing-options popover. A center-top
-  badge names the side currently shown.
+  60) in the viewing-options popover.
+- **Blink comparison** — a first-class display mode alongside Split and Error,
+  selectable from the bottom mode picker or via `B`. Swaps A↔B full-frame in
+  place (the "blink comparator" technique). Works during playback; `Esc` exits.
+  An auto-flip mode with adjustable rate is available in the viewing-options
+  popover. A center-top badge names the currently displayed side.
 - **Channel isolation** — `C` cycles RGB / R / G / B / Alpha / Luma, showing the
   selected channel as grayscale for inspection.
 - **Clipping & gamut warnings** — optional overlays that flag blown highlights
@@ -44,30 +44,30 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   pixels (yellow, negative working-space channels). Toggled in the popover.
 - **Playback-speed reduction** — 1× / ½× / ¼× / 0.1× for frame-accurate review
   of temporal artifacts.
-- **A/B alignment offset** — shift side B by ±N frames to align renders vs.
-  captures (or two encodes) that start a few frames apart.
+- **A/B alignment offset** — shift side B by ±N frames to align clips that start
+  a few frames apart (available in the viewing-options popover).
 - **Segment looping** — set in/out points (`I` / `O`) and loop a segment (`L`)
   for repeated review of one passage.
-- A consolidated **viewing-options popover** in the toolbar housing the controls
-  above, each section hiding itself when not applicable to the loaded media.
+- **Banding error category** — a CAMBI-inspired spatial metric that detects
+  quantization banding (flat-pixel ratio scaled by luma range) as a new tile
+  category in the HDR error explorer.
+- A consolidated **viewing-options popover** in the toolbar housing channels,
+  warnings, speed, offset, and loop controls, each section hiding itself when
+  not applicable to the loaded media.
 
 ### Changed
 - Refreshed the visual style, adapting the design language of the sibling
   project [Pixelwise](https://github.com/vork/Pixelwise): a near-black,
   faintly-purple canvas (`#0B0B0F`), soft panel surfaces, and a signature
-  purple→amber brand gradient. Primary calls-to-action (the empty-state
-  **Open A/B** buttons and the explorer **Analyze** button) are now filled
-  gradient buttons with a soft brand glow; toolbar and explorer controls use
-  bordered "ghost" buttons whose edges light up purple on hover. The previous
-  yellow active/selected accent (Explore toggle, category chips, tonemap
-  settings, focus outlines, scope icons) is now the purple brand accent, and
-  sliders/segmented pickers inherit it via a global tint. Keyboard-shortcut
-  keycaps in the help overlay, the tonemap response curve, and the various
-  panels (controls bar, explorer, media labels, pixel readout) were restyled
-  to match. A/B side identity is tied to the brand-gradient endpoints —
-  purple (A) and amber (B) — so the media labels and pixel-readout chips read
-  as the two ends of the brand wash. All styling is centralised in a new
+  purple→amber brand gradient. Primary calls-to-action use filled gradient
+  buttons with a soft brand glow; toolbar controls use bordered "ghost" buttons
+  that light up purple on hover. A/B side identity is tied to the brand-gradient
+  endpoints — purple (A) and amber (B). All styling is centralised in a new
   `Theme.swift`.
+- Explorer and temporal panels now overlay the video as translucent docked bars
+  at the bottom rather than shrinking the video canvas.
+- Display mode picker (`E`) cycles through Split → Blink → Error instead of
+  toggling between two modes.
 
 ## [0.6.2] - 2026-05-26
 
